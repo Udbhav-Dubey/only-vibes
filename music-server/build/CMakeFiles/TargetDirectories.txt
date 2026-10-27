@@ -1,0 +1,3 @@
+/home/kakarot/dev/only-vibes/music-server/build/CMakeFiles/nirvana.dir
+/home/kakarot/dev/only-vibes/music-server/build/CMakeFiles/edit_cache.dir
+/home/kakarot/dev/only-vibes/music-server/build/CMakeFiles/rebuild_cache.dir

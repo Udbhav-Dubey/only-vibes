@@ -2,9 +2,11 @@
 
 A terminal audio visualizer with synced lyrics.
 
+![screenshot](./screenshot.png)
+
 It listens to whatever my laptop is playing, draws smooth colored bars in the terminal that move with the music, and shows the current lyric line above them, in time with the song. All in one Python file, `spectrum.py`.
 
-Vibe coded with Claude in one long chat. I had the idea, picked the look, and kept saying "make it smoother" until it felt right.
+Made by Claude alone.
 
 ## What it does
 

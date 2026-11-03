@@ -70,6 +70,7 @@ Keys while running:
 ```bash
 python spectrum.py --phone
 ```
+![screenshot](./old_phone.jpeg) 
 
 The terminal shows a `phone: http://<laptop-ip>:8765` address under the lyrics. Open it in the phone's browser (same WiFi as the laptop), then tap the screen once to go fullscreen.
 

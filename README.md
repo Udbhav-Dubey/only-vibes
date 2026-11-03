@@ -13,6 +13,7 @@ Each project lives in its own folder.
 | [`music-server`](./music-server) | A frontend showdown: ChatGPT, Claude and Gemini each wrote a UI for my C++ HTTP server, [posix-server-nirvana](https://github.com/Udbhav-Dubey/posix-server-nirvana/) |
 | [`graph-plotter`](./graph-plotter) | A small Python script that turns lab readings (CSV) into graphs, with best-fit lines and a terminal mode. Made by Claude alone, and one attempt was more than enough |
 | [`repo-babysitter`](./repo-babysitter) | Two bash scripts that check my repos for uncommitted or unpushed work and back them up |
+| [`lyrics_visualize`](./lyrics_visualize) | A terminal audio visualizer for Linux: smooth spectrum bars that move with whatever's playing, with time-synced lyrics above them. Python. Built with Claude in one long chat, with me steering |
 
 More will show up whenever the mood strikes.
 

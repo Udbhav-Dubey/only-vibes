@@ -15,6 +15,7 @@ Run:    python spectrum.py
         python spectrum.py --theme sunset --gain -6
         python spectrum.py --player firefox --lyric-offset 0.3
         python spectrum.py --no-lyrics
+        python spectrum.py --phone          # also serve lyrics to a phone browser
 Keys:   , .  jump to previous / next lyric line (use when lyrics are out of sync)
         [ ]  nudge lyrics 0.5 s later / earlier        0  reset
 Quit:   Ctrl-C
@@ -28,6 +29,7 @@ import re
 import select
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import termios
@@ -37,6 +39,7 @@ import tty
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
@@ -379,6 +382,17 @@ class Lyrics:
             tgt = min(max(idx + direction, 0), len(self.times) - 1)
             return self.times[tgt] - pos + 0.02
 
+    def window_ids(self, pos: float, before: int, after: int):
+        """-> (status, current_index, [(index, text), ...]) around the current line."""
+        with self.lock:
+            if self.status != "synced":
+                return self.status, 0, []
+            idx = bisect.bisect_right(self.times, pos) - 1
+            out = [(i, self.rows[i][1])
+                   for i in range(idx - before, idx + after + 1)
+                   if 0 <= i < len(self.rows)]
+            return "synced", idx, out
+
     def window(self, pos: float, half: int):
         """-> (status, [(offset, text)] for offsets -half..+half, where 0 = current)."""
         with self.lock:
@@ -392,6 +406,182 @@ class Lyrics:
                 text = rows[i][1] if 0 <= i < len(rows) else ""
                 out.append((off, text))
             return status, out
+
+
+# --------------------------------------------------------------------------
+# Phone display (tiny web server + page, pushed over Server-Sent Events)
+# --------------------------------------------------------------------------
+PHONE_PAGE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>lyrics</title>
+<style>
+:root{--accent:#ff2bd6;--k:1;--fs:calc(min(8vw,8vh)*var(--k));--lh:calc(var(--fs)*2.5)}
+html,body{margin:0;height:100%;background:#000;color:#fff;overflow:hidden;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  -webkit-tap-highlight-color:transparent;user-select:none}
+#ttl{position:absolute;top:0;left:0;right:0;
+  padding:calc(env(safe-area-inset-top,0px) + 2.2vh) 6vw 0;text-align:center;
+  font-size:calc(var(--fs)*.45);color:#6b6b7b;letter-spacing:.04em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#stage{position:absolute;inset:0}
+.line{position:absolute;left:0;right:0;top:50%;box-sizing:border-box;padding:0 6vw;
+  text-align:center;font-size:var(--fs);line-height:1.2;color:#fff;
+  --slot:0;--sc:.82;opacity:0;
+  transform:translateY(calc(-50% + var(--slot)*var(--lh))) scale(var(--sc));
+  transition:transform .6s cubic-bezier(.2,.8,.2,1),opacity .6s,text-shadow .6s}
+.line[data-s="-1"],.line[data-s="1"]{opacity:.45}
+.line[data-s="2"]{opacity:.22}
+.line[data-s="0"]{--sc:1.12;opacity:1;font-weight:700;text-shadow:0 0 .7em var(--accent)}
+#msg{position:absolute;top:50%;left:0;right:0;transform:translateY(-50%);
+  text-align:center;color:#6b6b7b;font-style:italic;font-size:var(--fs);
+  padding:0 6vw;display:none}
+#dot{position:absolute;right:3vw;bottom:calc(env(safe-area-inset-bottom,0px) + 2vh);
+  width:8px;height:8px;border-radius:50%;background:#3a3a46}
+#dot.on{background:var(--accent)}
+</style></head><body>
+<div id="ttl"></div><div id="stage"></div><div id="msg"></div><div id="dot"></div>
+<script>
+(function(){
+  var stage=document.getElementById('stage'), msg=document.getElementById('msg'),
+      ttl=document.getElementById('ttl'), dot=document.getElementById('dot');
+  var els=new Map(), song=null;
+  var k=parseFloat(new URLSearchParams(location.search).get('size'));
+  if(k>0){ document.documentElement.style.setProperty('--k',k); }
+  function clearAll(){ els.forEach(function(d){d.remove();}); els.clear(); }
+  function apply(d){
+    document.documentElement.style.setProperty('--accent', d.accent||'#ff2bd6');
+    ttl.textContent=d.title||'';
+    msg.textContent=d.msg||''; msg.style.display=d.msg?'block':'none';
+    if(d.song!==song){ song=d.song; clearAll(); }
+    var cur=(typeof d.cur==='number')?d.cur:0, keep=new Set(), lines=d.lines||[];
+    lines.forEach(function(ln){
+      keep.add(ln.id);
+      var div=els.get(ln.id), slot=ln.id-cur;
+      if(!div){
+        div=document.createElement('div'); div.className='line'; div.textContent=ln.text;
+        div.dataset.s=slot+1; div.style.setProperty('--slot',slot+1);
+        stage.appendChild(div); els.set(ln.id,div); void div.offsetWidth;
+      }
+      div.dataset.s=slot; div.style.setProperty('--slot',slot);
+    });
+    els.forEach(function(div,id){
+      if(keep.has(id)) return;
+      var slot=Math.max(-4,Math.min(4,id-cur));
+      div.dataset.s=slot; div.style.setProperty('--slot',slot); els.delete(id);
+      setTimeout(function(){div.remove();},700);
+    });
+  }
+  function connect(){
+    var es=new EventSource('/events');
+    es.onopen=function(){dot.className='on';};
+    es.onerror=function(){dot.className='';};
+    es.onmessage=function(e){ try{apply(JSON.parse(e.data));}catch(_){} };
+  }
+  document.body.addEventListener('click',function(){
+    if(document.fullscreenElement){document.exitFullscreen();}
+    else if(document.documentElement.requestFullscreen){document.documentElement.requestFullscreen();}
+  });
+  connect();
+})();
+</script></body></html>
+"""
+
+
+class PhoneHub:
+    """Holds the latest payload; SSE handlers wait on it for changes."""
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.version = 0
+        self.payload = json.dumps({"msg": "waiting for music…", "lines": []},
+                                  ensure_ascii=False)
+
+    def publish(self, data: dict):
+        s = json.dumps(data, ensure_ascii=False)
+        with self.cond:
+            if s != self.payload:
+                self.payload = s
+                self.version += 1
+                self.cond.notify_all()
+
+
+def make_handler(hub: PhoneHub):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.path in ("/", "/index.html"):
+                body = PHONE_PAGE.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/events":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                seen = -1
+                try:
+                    while True:
+                        with hub.cond:
+                            if hub.version == seen:
+                                hub.cond.wait(15)
+                            changed = hub.version != seen
+                            seen, data = hub.version, hub.payload
+                        if changed:
+                            self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+                        else:
+                            self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+            else:
+                self.send_error(404)
+
+    return Handler
+
+
+def lan_ip() -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))   # no packet is sent; just picks the route
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def phone_state(np_state, lyr: Lyrics, offset: float, theme: str) -> dict:
+    """Payload for the phone: 5 lines around the current one (page shows 4)."""
+    avail, artist, title, album, length, pos, playing, _est = np_state
+    d = {"accent": "rgb(%d,%d,%d)" % theme_rgb(theme, 0.85),
+         "title": "", "song": "", "msg": "", "lines": [], "cur": 0}
+    if not (avail and title):
+        d["msg"] = "start some music…"
+        return d
+    d["title"] = (f"{clean_artist(artist)} — {title}" if artist else title) + \
+                 ("" if playing else "  ⏸")
+    d["song"] = f"{artist}|{title}"
+    lyr.update(artist, title, album, length)
+    status, cur, win = lyr.window_ids(pos + offset, 2, 2)
+    if status == "synced":
+        d["cur"] = cur
+        d["lines"] = [{"id": i, "text": t} for i, t in win]
+    else:
+        d["msg"] = {"loading": "fetching lyrics…",
+                    "none": "no lyrics found",
+                    "error": "couldn't reach lyrics service",
+                    "instrumental": "♪ instrumental ♪",
+                    "plain": "lyrics available but not time-synced"}.get(status, "")
+    return d
 
 
 # --------------------------------------------------------------------------
@@ -417,7 +607,8 @@ def center(text: str, cols: int) -> str:
     return " " * max(0, (cols - len(text)) // 2) + text
 
 
-def render_lyrics(np_state, lyr: Lyrics, theme: str, cols: int, offset: float):
+def render_lyrics(np_state, lyr: Lyrics, theme: str, cols: int, offset: float,
+                  phone_url: str | None = None):
     """Fixed LYRIC_ROWS lines: header, blank, 5 lyric lines, blank."""
     avail, artist, title, _album, _length, pos, playing, estimated = np_state
     accent = theme_rgb(theme, 0.85)
@@ -474,7 +665,7 @@ def render_lyrics(np_state, lyr: Lyrics, theme: str, cols: int, offset: float):
 
     for i in range(5):
         lines.append(shades[i] + styles[i] + center(body[i], cols) + "\x1b[0m" + K)
-    lines.append(K)
+    lines.append(dim + center("phone: " + phone_url, cols) + "\x1b[0m" + K if phone_url else K)
     return "\n".join(lines)
 
 
@@ -519,12 +710,17 @@ def main():
                     help="playerctl player name, e.g. firefox, spotify (default: first active)")
     ap.add_argument("--lyric-offset", type=float, default=0.0,
                     help="seconds to shift lyrics (+ = show lines earlier)")
+    ap.add_argument("--phone", action="store_true",
+                    help="serve the lyrics to a phone/tablet browser on your network")
+    ap.add_argument("--port", type=int, default=8765, help="port for --phone (default 8765)")
     args = ap.parse_args()
 
     if shutil.which("parec") is None:
         sys.exit("parec not found. Install it with: sudo pacman -S libpulse")
     use_lyrics = not args.no_lyrics
-    if use_lyrics and shutil.which("playerctl") is None:
+    if (use_lyrics or args.phone) and shutil.which("playerctl") is None:
+        if args.phone:
+            sys.exit("--phone needs playerctl. Install it with: sudo pacman -S playerctl")
         print("playerctl not found, running without lyrics "
               "(sudo pacman -S playerctl)", file=sys.stderr)
         use_lyrics = False
@@ -535,11 +731,22 @@ def main():
     if not cap.alive():
         sys.exit("parec exited immediately. Check sources with: pactl list short sources")
 
-    nowp = lyr = None
-    if use_lyrics:
+    nowp = lyr = hub = phone_url = None
+    if use_lyrics or args.phone:
         nowp = NowPlaying(args.player)
         nowp.start()
         lyr = Lyrics()
+    if args.phone:
+        hub = PhoneHub()
+        try:
+            httpd = ThreadingHTTPServer(("0.0.0.0", args.port), make_handler(hub))
+        except OSError as e:
+            cap.proc.terminate()
+            sys.exit(f"couldn't start phone server on port {args.port}: {e}")
+        httpd.daemon_threads = True
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        phone_url = f"http://{lan_ip()}:{args.port}"
+        print(f"phone display: {phone_url}", file=sys.stderr)
 
     fd = sys.stdin.fileno()
     old_tty = termios.tcgetattr(fd) if sys.stdin.isatty() else None
@@ -570,6 +777,7 @@ def main():
     bars = peaks = peak_vel = None
     top = 0
     frame_dt = 1.0 / args.fps
+    last_phone = -1.0
 
     while True:
         t0 = time.perf_counter()
@@ -605,7 +813,7 @@ def main():
         peaks = np.maximum(peaks - peak_vel, bars)
 
         frame = render_bars(bars, peaks, rows, colors, args.width, args.gap, cols)
-        if top:
+        if nowp is not None:
             if old_tty is not None:
                 while select.select([fd], [], [], 0)[0]:
                     for ch in os.read(fd, 32).decode(errors="ignore"):
@@ -618,7 +826,12 @@ def main():
                         elif ch in ",.":
                             p = nowp.state()[5] + lyric_offset
                             lyric_offset += lyr.jump(p, 1 if ch == "." else -1)
-            head = render_lyrics(nowp.state(), lyr, args.theme, cols, lyric_offset)
+            if hub is not None and t0 - last_phone > 0.1:
+                last_phone = t0
+                hub.publish(phone_state(nowp.state(), lyr, lyric_offset, args.theme))
+        if top:
+            head = render_lyrics(nowp.state(), lyr, args.theme, cols, lyric_offset,
+                                 phone_url)
             frame = head + "\n" + frame
         out.write("\x1b[H" + frame)
         out.flush()

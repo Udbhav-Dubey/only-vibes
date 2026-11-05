@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# usage: buddy mode dsa "Two Sum" | buddy mode idle | buddy flash happy|worry|panic | buddy lyric "line"
+URL=${BUDDY_URL:-http://localhost:3030}
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g;s/"/\\"/g'; }
+post() { curl -s -m 1 -X POST -H 'Content-Type: application/json' -d "$1" "$URL/event" >/dev/null; }
+case "$1" in
+  mode)  post "{\"type\":\"mode\",\"value\":\"$(esc "$2")\",\"text\":\"$(esc "$3")\"}" ;;
+  flash) post "{\"type\":\"flash\",\"mood\":\"$(esc "$2")\"}" ;;
+  lyric) post "{\"type\":\"lyric\",\"line\":\"$(esc "$2")\"}" ;;
+  *) echo "usage: buddy mode|flash|lyric ..."; exit 1 ;;
+esac

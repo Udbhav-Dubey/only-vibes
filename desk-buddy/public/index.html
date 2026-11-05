@@ -1,0 +1,193 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000">
+<title>buddy</title>
+<style>
+  :root { --bg:#000; --eye:#ece8df; --pupil:#0a0a0a; --fg:#ece8df; --dim:#6d6a63; }
+  * { box-sizing: border-box; }
+  html, body { height:100%; margin:0; background:var(--bg); color:var(--fg); overflow:hidden;
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; }
+  body { display:flex; flex-direction:column; justify-content:center; align-items:center; gap:2vh; padding:2vh 4vw; }
+  html { touch-action:manipulation; -webkit-tap-highlight-color:transparent; user-select:none; -webkit-user-select:none; }
+  .sc { fill:var(--eye); } .p { fill:var(--pupil); } .lt, .lb { fill:var(--bg); }
+  svg { width:min(92vw, 150vh); height:auto; max-height:62vh; }
+  #info { text-align:center; min-height:22vh; width:100%; }
+  #title { font-size:clamp(18px,4.5vh,40px); }
+  #sub { font-size:clamp(14px,3vh,26px); color:var(--dim); margin-top:.6em; }
+  #z { position:fixed; right:12vw; top:8vh; font-size:5vh; color:var(--dim); opacity:0; }
+  #z.on { animation: zz 2.4s ease-in-out infinite; }
+  @keyframes zz { 0%{opacity:0;transform:translate(0,10px)} 30%{opacity:.9} 100%{opacity:0;transform:translate(14px,-30px)} }
+  @media (prefers-reduced-motion: reduce) { #z.on { animation:none; opacity:.7; } }
+</style>
+<svg viewBox="0 0 500 260" aria-label="buddy eyes">
+  <defs>
+    <clipPath id="cl"><ellipse cx="130" cy="130" rx="90" ry="110"/></clipPath>
+    <clipPath id="cr"><ellipse cx="370" cy="130" rx="90" ry="110"/></clipPath>
+  </defs>
+  <g id="L" clip-path="url(#cl)">
+    <rect class="sc" x="30" y="0" width="200" height="260"/>
+    <circle class="p" cx="130" cy="130" r="38"/>
+    <rect class="lt" x="-30" y="-100" width="320" height="0"/>
+    <rect class="lb" x="30" y="260" width="200" height="0"/>
+  </g>
+  <g id="R" clip-path="url(#cr)">
+    <rect class="sc" x="270" y="0" width="200" height="260"/>
+    <circle class="p" cx="370" cy="130" r="38"/>
+    <rect class="lt" x="210" y="-100" width="320" height="0"/>
+    <rect class="lb" x="270" y="260" width="200" height="0"/>
+  </g>
+</svg>
+<div id="z">z z</div>
+<div id="info"><div id="title"></div><div id="sub"></div></div>
+
+<script>
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+let st = { mode:'idle', text:'', since:Date.now() }, idleMs = 0, flash = null, lyric = '', lyricAt = 0;
+let tgt = {x:0,y:0}, g = {x:0,y:0}, lid = 0, bot = 0, sl = 0, startle = 0, wasIdle = 0;
+let poke = {n:0, last:0, until:0, lv:null}, say = null, actx = null;
+let wander = {x:0,y:0,next:0}, blinkAt = performance.now()+3000, blinkStart = -1e9, roll = {until:0,next:20000};
+const clamp = (v,a,b) => Math.min(b, Math.max(a, v));
+// fallback: input seen by this page itself (works on localhost even if the server can't read the cursor)
+let localLast = Date.now();
+const idleNow = () => Math.min(idleMs, Date.now() - localLast);
+addEventListener('mousemove', e => { localLast = Date.now(); tgt = { x: clamp((e.clientX/innerWidth-.5)*2,-1,1), y: clamp((e.clientY/innerHeight-.5)*2-.25,-1,1) }; });
+addEventListener('keydown', () => { localLast = Date.now(); });
+// tap anywhere once to go fullscreen (browsers require a user gesture)
+addEventListener('click', () => {
+  const r = document.documentElement;
+  if (!document.fullscreenElement && !document.webkitFullscreenElement)
+    (r.requestFullscreen || r.webkitRequestFullscreen)?.call(r);
+});
+
+// ---- poke: tap the eyes. a couple of taps = annoyed, spam = angry, more = it ignores you ----
+const LINES = [null, null, 'hey', '...', 'stop.', 'stop.', 'i said stop.', 'last warning'];
+addEventListener('pointerdown', e => {
+  const now = performance.now();
+  localLast = Date.now();
+  tgt = { x: clamp((e.clientX/innerWidth-.5)*2,-1,1), y: clamp((e.clientY/innerHeight-.5)*2-.25,-1,1) };
+  poke.n = now - poke.last < 4000 ? poke.n + 1 : 1; poke.last = now;
+  const n = poke.n, hold = n < 4 ? 2500 : 4500;
+  startle = n === 1 ? 1 : n < 8 ? .5 : .15;
+  poke.lv = n === 1 ? null : n < 4 ? 'annoyed' : n < 8 ? 'angry' : 'ignore';
+  poke.until = now + hold;
+  const line = n >= 8 ? 'not talking to you' : LINES[n];
+  say = line ? { text: line, until: Date.now() + hold } : null;
+  render();
+});
+
+// phase-change beep (needs one tap on the page first: same tap that goes fullscreen)
+addEventListener('click', () => {
+  try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); actx.resume(); } catch (_) {}
+});
+function beep(high) {
+  if (!actx) return;
+  const o = actx.createOscillator(), a = actx.createGain(), t = actx.currentTime;
+  o.frequency.value = high ? 880 : 520; o.connect(a); a.connect(actx.destination);
+  a.gain.setValueAtTime(.0001, t); a.gain.exponentialRampToValueAtTime(.25, t+.03); a.gain.exponentialRampToValueAtTime(.0001, t+.6);
+  o.start(t); o.stop(t+.65);
+}
+
+// ---- events ----
+const es = new EventSource('/events');
+es.onmessage = m => {
+  const e = JSON.parse(m.data);
+  if (e.type === 'state') {
+    const prev = st; st = e.state; st.recv = Date.now();
+    if (prev.mode === 'pomo' && st.mode === 'pomo' && prev.phase !== st.phase) beep(st.phase !== 'focus');
+    render();
+  }
+  else if (e.type === 'mouse') { tgt = { x: clamp((e.x-.5)*2,-1,1), y: clamp((e.y-.5)*2-.25,-1,1) }; }
+  else if (e.type === 'idle') idleMs = e.ms;
+  else if (e.type === 'lyric') { lyric = e.line; lyricAt = Date.now(); render(); }
+  else if (e.type === 'flash') flash = { mood:e.mood, until: performance.now() + (e.mood==='panic'?3500:2500) };
+};
+
+// ---- text area ----
+const fmt = s => { s = Math.floor(s); return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
+function render() {
+  const el = (Date.now() - st.since) / 1000, T = $('#title'), S = $('#sub');
+  if (st.mode === 'dsa') {
+    T.textContent = st.text || 'what are we solving today?';
+    S.textContent = el > 1500 ? `${fmt(el)}  stuck? write the brute force first` : fmt(el);
+  } else if (st.mode === 'coding') {
+    T.textContent = 'nvim'; S.textContent = `in the editor for ${fmt(el)}`;
+  } else if (st.mode === 'pomo') {
+    const left = Math.max(0, st.left - (Date.now() - st.recv));
+    T.textContent = fmt(Math.ceil(left / 1000));
+    S.textContent = `${st.phase === 'focus' ? 'focus' : st.phase === 'long' ? 'long break' : 'break'}   ${'●'.repeat(st.done)}${'○'.repeat(4 - st.done)}`;
+  } else if (st.mode === 'music') {
+    T.textContent = lyric; S.textContent = '';
+  } else {
+    const d = new Date(); T.textContent = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    S.textContent = '';
+  }
+  if (say && Date.now() < say.until) S.textContent = say.text;
+}
+setInterval(render, 250); render();
+
+// ---- eyes ----
+function level(now) {
+  if (poke.lv && now < poke.until) return poke.lv;
+  if (flash && now < flash.until) return flash.mood;
+  flash = null;
+  if (st.mode === 'dsa' && Date.now() - st.since > 1500000) return 'worry';
+  const i = idleNow() / 1000;
+  if (st.mode === 'pomo') return st.phase === 'focus' ? (i > 90 ? 'bored' : 'focus') : (i > 180 ? 'sleepy' : 'chill');
+  return i > 120 ? 'asleep' : i > 60 ? 'sleepy' : i > 20 ? 'bored' : 'alert';
+}
+function frame(now) {
+  const lv = level(now), i = idleNow() / 1000;
+  if (wasIdle > 30 && i < 1.5) startle = 1;           // woke up: jolt
+  wasIdle = i; startle *= 0.94;
+
+  let lidT = 0, botT = 0, pr = 38, shake = 0, slantT = 0, gaze = tgt;
+  if (lv === 'bored' || lv === 'sleepy' || lv === 'chill') {
+    if (now > wander.next) { wander = { x: Math.random()*1.6-.8, y: Math.random()*1.2-.7, next: now + 1200 + Math.random()*3000 }; }
+    gaze = wander;
+    if (lv !== 'chill' && now > roll.next) { roll.until = now + 1600; roll.next = now + 15000 + Math.random()*20000; }  // eye roll
+    if (lv !== 'chill' && now < roll.until) { const a = (now - (roll.until-1600))/1600*Math.PI*2; gaze = { x:Math.cos(a)*.9, y:Math.sin(a)*.8 }; }
+    lidT = lv === 'bored' ? .35 : lv === 'sleepy' ? .62 : .2;
+    if (lv === 'chill') botT = .18;
+    if (lv === 'sleepy') gaze = { x: gaze.x*.4, y: .5 };
+  }
+  if (lv === 'asleep' || lv === 'ignore') lidT = 1;
+  if (lv === 'focus') { lidT = .22; slantT = 5; pr = 34; }
+  if (lv === 'annoyed') { lidT = .38; slantT = 14; pr = 32; }
+  if (lv === 'angry') { lidT = .5; slantT = 24; pr = 22; shake = 2.5; gaze = { x:0, y:-.1 }; }
+  if (lv === 'happy') { botT = .38; }
+  if (lv === 'worry') { pr = 26; shake = 1.5; }
+  if (lv === 'panic') { pr = 18; shake = 5; }
+  $('#z').classList.toggle('on', lv === 'asleep');
+
+  // blink (slower and rarer when bored, occasional double-blink)
+  if (now > blinkAt) {
+    blinkStart = now;
+    blinkAt = now + (Math.random() < .15 ? 260 : (lv==='alert'||lv==='happy' ? 2200 : 4000) + Math.random()*4500);
+  }
+  const bp = (now - blinkStart) / 170, blink = bp >= 0 && bp <= 1 ? Math.sin(bp*Math.PI) : 0;
+
+  lid += (lidT - lid) * .12; bot += (botT - bot) * .15; sl += (slantT - sl) * .15;
+  const k = (lv==='alert' || lv==='focus' || lv==='annoyed' || lv==='angry') ? .2 : .08;
+  g.x += (gaze.x - g.x) * k; g.y += (gaze.y - g.y) * k;
+  const top = Math.max(lid, blink) * 2*110 * (1 - startle*.4);
+  const sx = shake ? Math.sin(now/28)*shake : 0, sy = shake ? Math.cos(now/33)*shake : 0;
+  const wide = startle * 8;
+
+  for (const side of ['L','R']) {
+    const gEl = $('#'+side);
+    const p = gEl.querySelector('.p');
+    p.setAttribute('r', pr + wide);
+    p.setAttribute('transform', `translate(${g.x*34 + sx},${g.y*26 + sy})`);
+    const lt = gEl.querySelector('.lt'), lb = gEl.querySelector('.lb');
+    lt.setAttribute('height', top + 120);
+    lt.setAttribute('transform', `rotate(${(side==='L' ? sl : -sl) * (1 - blink)},${side==='L' ? 130 : 370},${20 + top})`);
+    const bh = bot * 220; lb.setAttribute('y', 240 - bh); lb.setAttribute('height', bh);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>

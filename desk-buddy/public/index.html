@@ -9,10 +9,11 @@
 <style>
   :root { --bg:#000; --eye:#ece8df; --pupil:#0a0a0a; --fg:#ece8df; --dim:#6d6a63; }
   * { box-sizing: border-box; }
+  html { touch-action:manipulation; -webkit-tap-highlight-color:transparent; user-select:none; -webkit-user-select:none; }
   html, body { height:100%; margin:0; background:var(--bg); color:var(--fg); overflow:hidden;
     font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; }
   body { display:flex; flex-direction:column; justify-content:center; align-items:center; gap:2vh; padding:2vh 4vw; }
-  html { touch-action:manipulation; -webkit-tap-highlight-color:transparent; user-select:none; -webkit-user-select:none; }
+  .brow { stroke:var(--eye); stroke-width:12; stroke-linecap:round; }
   .sc { fill:var(--eye); } .p { fill:var(--pupil); } .lt, .lb { fill:var(--bg); }
   svg { width:min(92vw, 150vh); height:auto; max-height:62vh; }
   #info { text-align:center; min-height:22vh; width:100%; }
@@ -20,10 +21,23 @@
   #sub { font-size:clamp(14px,3vh,26px); color:var(--dim); margin-top:.6em; }
   #z { position:fixed; right:12vw; top:8vh; font-size:5vh; color:var(--dim); opacity:0; }
   #z.on { animation: zz 2.4s ease-in-out infinite; }
+  #status { position:fixed; left:4vw; bottom:3vh; color:var(--dim); font-size:clamp(10px,1.6vh,15px); }
+  #lyric { min-height:1.5em; color:var(--fg); opacity:.92; font-size:clamp(22px,5.2vh,54px); line-height:1.25; margin-top:.45em; max-width:92vw; text-wrap:balance; transition:opacity .25s, transform .25s; }
+  #lyric:empty { display:none; }
+  /* idle/coding + music: big lyrics, track name on top */
+  body.music-view #title { font-size:clamp(14px,2.5vh,24px); color:var(--dim); }
+  body.music-view #sub { display:none; }
+  body.music-view #lyric { font-size:clamp(28px,6.4vh,68px); opacity:1; margin-top:.25em; }
+  body.music-view #info { min-height:24vh; display:flex; flex-direction:column; justify-content:center; align-items:center; }
+  /* dsa/pomo + music: the timer/problem stays, lyrics sit under it, smaller */
+  body.music-compact #lyric { font-size:clamp(16px,3.4vh,34px); color:var(--dim); opacity:1; margin-top:.5em; }
+  #mouth { fill:none; stroke:var(--eye); stroke-width:7; stroke-linecap:round; opacity:0; transition:all .2s; }
+  #face.sway { transform-origin:50% 50%; animation:sway 2.8s ease-in-out infinite; }
+  @keyframes sway { 0%,100%{transform:rotate(-1deg) translateY(0)} 50%{transform:rotate(1deg) translateY(5px)} }
   @keyframes zz { 0%{opacity:0;transform:translate(0,10px)} 30%{opacity:.9} 100%{opacity:0;transform:translate(14px,-30px)} }
   @media (prefers-reduced-motion: reduce) { #z.on { animation:none; opacity:.7; } }
 </style>
-<svg viewBox="0 0 500 260" aria-label="buddy eyes">
+<svg id="face" viewBox="0 -50 500 350" aria-label="buddy eyes">
   <defs>
     <clipPath id="cl"><ellipse cx="130" cy="130" rx="90" ry="110"/></clipPath>
     <clipPath id="cr"><ellipse cx="370" cy="130" rx="90" ry="110"/></clipPath>
@@ -31,31 +45,54 @@
   <g id="L" clip-path="url(#cl)">
     <rect class="sc" x="30" y="0" width="200" height="260"/>
     <circle class="p" cx="130" cy="130" r="38"/>
-    <rect class="lt" x="-30" y="-100" width="320" height="0"/>
-    <rect class="lb" x="30" y="260" width="200" height="0"/>
+    <polygon class="lt" points="30,-20 230,-20 230,20 30,20"/>
+    <path class="lb" d="M30,262 L30,240 L230,240 L230,262Z"/>
   </g>
   <g id="R" clip-path="url(#cr)">
     <rect class="sc" x="270" y="0" width="200" height="260"/>
     <circle class="p" cx="370" cy="130" r="38"/>
-    <rect class="lt" x="210" y="-100" width="320" height="0"/>
-    <rect class="lb" x="270" y="260" width="200" height="0"/>
+    <polygon class="lt" points="270,-20 470,-20 470,20 270,20"/>
+    <path class="lb" d="M270,262 L270,240 L470,240 L470,262Z"/>
   </g>
+  <line id="bL" class="brow" x1="45" y1="-12" x2="215" y2="-12"/>
+  <line id="bR" class="brow" x1="285" y1="-12" x2="455" y2="-12"/>
+  <path id="sweat" d="M452 -6 Q472 26 452 46 Q432 26 452 -6Z" fill="#8ec5ff" opacity="0" style="transition:opacity .25s"/>
+  <path id="mouth" d="M220 265 Q250 265 280 265"/>
 </svg>
 <div id="z">z z</div>
-<div id="info"><div id="title"></div><div id="sub"></div></div>
+<div id="info"><div id="title"></div><div id="sub"></div><div id="lyric"></div></div><div id="status">energy 100 · attention 50</div>
 
 <script>
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 let st = { mode:'idle', text:'', since:Date.now() }, idleMs = 0, flash = null, lyric = '', lyricAt = 0;
-let tgt = {x:0,y:0}, g = {x:0,y:0}, lid = 0, bot = 0, sl = 0, startle = 0, wasIdle = 0;
-let poke = {n:0, last:0, until:0, lv:null}, say = null, actx = null;
+let energy=100, attention=50, failureStreak=0, lastActivity=Date.now(), typingTimes=[], micro={next:performance.now()+5000,until:0,type:''}, pokeTimes=[];
+let audio={bass:0,mid:0,treble:0,beat:0,stamp:0}, lyricGlanceUntil=0, lyricSide=1;
+let poke={n:0,last:0,until:0,lv:null}, say=null, actx=null, kps=0, notifyUntil=0;
+let tgt = {x:0,y:0}, g = {x:0,y:0}, lid = 0, bot = 0, startle = 0, wasIdle = 0;
 let wander = {x:0,y:0,next:0}, blinkAt = performance.now()+3000, blinkStart = -1e9, roll = {until:0,next:20000};
+const ex = {tilt:0, brow:0, bt:0};
+let music = {on:false, name:'', line:'', status:''}, lineTimes = [], groove = {period:1400, lastLine:-1e9};
+// each lyric line = one beat of "groove": the brows pop on it, and the nod speed follows how fast lines come
+function noteLine(now) {
+  groove.lastLine = now; lineTimes.push(now); if (lineTimes.length > 5) lineTimes.shift();
+  if (lineTimes.length >= 3) groove.period = clamp((lineTimes[lineTimes.length-1] - lineTimes[0]) / (lineTimes.length-1) / 2, 600, 2200);
+}
+function grooveLift(now, lv) {
+  if (!music.on || !(lv==='vibe' || lv==='hype' || lv==='chill')) return 0;
+  const amp = lv==='hype' ? 1.5 : lv==='chill' ? .45 : 1;
+  const nod = (Math.sin(now / groove.period * Math.PI * 2) * .5 + .5) * 5;       // steady head-nod
+  const hit = Math.max(0, 1 - (now - groove.lastLine) / 450) * 9;                 // pop on each new lyric line
+  const live = now - audio.stamp < 700 ? audio.bass * 10 : 0;                     // real bass when spectrum.py runs
+  return amp * (nod + hit) + live;
+}   // lid tilt, brow lift, brow tilt (smoothed)
 const clamp = (v,a,b) => Math.min(b, Math.max(a, v));
 // fallback: input seen by this page itself (works on localhost even if the server can't read the cursor)
 let localLast = Date.now();
 const idleNow = () => Math.min(idleMs, Date.now() - localLast);
 addEventListener('mousemove', e => { localLast = Date.now(); tgt = { x: clamp((e.clientX/innerWidth-.5)*2,-1,1), y: clamp((e.clientY/innerHeight-.5)*2-.25,-1,1) }; });
-addEventListener('keydown', () => { localLast = Date.now(); });
+addEventListener('keydown', () => { localLast = Date.now(); lastActivity=Date.now(); energy=clamp(energy+2,0,100); attention=clamp(attention+8,0,100); typingTimes.push(Date.now()); typingTimes=typingTimes.filter(t=>Date.now()-t<3000); });
+addEventListener('touchstart', e=>{localLast=Date.now();lastActivity=Date.now();energy=clamp(energy+4,0,100);pokeTimes.push(Date.now());pokeTimes=pokeTimes.filter(t=>Date.now()-t<5000);if(pokeTimes.length>4) flash={mood:'annoyed',until:performance.now()+1800}; const t=e.touches[0]; tgt={x:clamp((t.clientX/innerWidth-.5)*2,-1,1),y:clamp((t.clientY/innerHeight-.5)*2-.25,-1,1)};},{passive:true});
+addEventListener('pointerdown',e=>{if(e.pointerType==='mouse'){lastActivity=Date.now();energy=clamp(energy+1,0,100);}});
 // tap anywhere once to go fullscreen (browsers require a user gesture)
 addEventListener('click', () => {
   const r = document.documentElement;
@@ -63,52 +100,45 @@ addEventListener('click', () => {
     (r.requestFullscreen || r.webkitRequestFullscreen)?.call(r);
 });
 
-// ---- poke: tap the eyes. a couple of taps = annoyed, spam = angry, more = it ignores you ----
-const LINES = [null, null, 'hey', '...', 'stop.', 'stop.', 'i said stop.', 'last warning'];
+// Friendly poke ladder: startled, annoyed, angry, then temporarily ignores spam.
+const POKE_LINES=[null,null,'hey','...','stop.','stop.','i said stop.','last warning'];
 addEventListener('pointerdown', e => {
-  const now = performance.now();
-  localLast = Date.now();
-  tgt = { x: clamp((e.clientX/innerWidth-.5)*2,-1,1), y: clamp((e.clientY/innerHeight-.5)*2-.25,-1,1) };
-  poke.n = now - poke.last < 4000 ? poke.n + 1 : 1; poke.last = now;
-  const n = poke.n, hold = n < 4 ? 2500 : 4500;
-  startle = n === 1 ? 1 : n < 8 ? .5 : .15;
-  poke.lv = n === 1 ? null : n < 4 ? 'annoyed' : n < 8 ? 'angry' : 'ignore';
-  poke.until = now + hold;
-  const line = n >= 8 ? 'not talking to you' : LINES[n];
-  say = line ? { text: line, until: Date.now() + hold } : null;
+  const now=performance.now(); localLast=Date.now();
+  tgt={x:clamp((e.clientX/innerWidth-.5)*2,-1,1),y:clamp((e.clientY/innerHeight-.5)*2-.25,-1,1)};
+  startle=Math.max(startle,.8);
+  poke.n=now-poke.last<4000?poke.n+1:1; poke.last=now;
+  const n=poke.n, hold=n<4?2500:4500;
+  poke.lv=n===1?null:n<4?'annoyed':n<8?'angry':'ignore'; poke.until=now+hold;
+  const line=n>=8?'not talking to you':POKE_LINES[n];
+  say=line?{text:line,until:Date.now()+hold}:null;
   render();
 });
-
-// phase-change beep (needs one tap on the page first: same tap that goes fullscreen)
-addEventListener('click', () => {
-  try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); actx.resume(); } catch (_) {}
-});
-function beep(high) {
-  if (!actx) return;
-  const o = actx.createOscillator(), a = actx.createGain(), t = actx.currentTime;
-  o.frequency.value = high ? 880 : 520; o.connect(a); a.connect(actx.destination);
-  a.gain.setValueAtTime(.0001, t); a.gain.exponentialRampToValueAtTime(.25, t+.03); a.gain.exponentialRampToValueAtTime(.0001, t+.6);
-  o.start(t); o.stop(t+.65);
-}
+// Browsers only allow audio after a user gesture.
+addEventListener('click',()=>{try{actx=actx||new(window.AudioContext||window.webkitAudioContext)();actx.resume();}catch(_){}});
+function beep(high){if(!actx)return;const o=actx.createOscillator(),a=actx.createGain(),t=actx.currentTime;o.frequency.value=high?880:520;o.connect(a);a.connect(actx.destination);a.gain.setValueAtTime(.0001,t);a.gain.exponentialRampToValueAtTime(.12,t+.03);a.gain.exponentialRampToValueAtTime(.0001,t+.45);o.start(t);o.stop(t+.5);}
 
 // ---- events ----
 const es = new EventSource('/events');
 es.onmessage = m => {
   const e = JSON.parse(m.data);
-  if (e.type === 'state') {
-    const prev = st; st = e.state; st.recv = Date.now();
-    if (prev.mode === 'pomo' && st.mode === 'pomo' && prev.phase !== st.phase) beep(st.phase !== 'focus');
-    render();
-  }
+  if (e.type === 'state') { const prev=st; st=e.state; st.recv=Date.now(); if(prev.mode==='pomo'&&st.mode==='pomo'&&prev.phase!==st.phase) beep(st.phase!=='focus'); render(); }
   else if (e.type === 'mouse') { tgt = { x: clamp((e.x-.5)*2,-1,1), y: clamp((e.y-.5)*2-.25,-1,1) }; }
   else if (e.type === 'idle') idleMs = e.ms;
-  else if (e.type === 'lyric') { lyric = e.line; lyricAt = Date.now(); render(); }
-  else if (e.type === 'flash') flash = { mood:e.mood, until: performance.now() + (e.mood==='panic'?3500:2500) };
+  else if (e.type === 'music') { const was = music.on; music = e; lyric = e.line || ''; if (!e.on || !was) lineTimes = []; render(); }
+  else if (e.type === 'lyric') { lyric = e.line; music.line = e.line; lyricAt = Date.now(); lyricGlanceUntil=performance.now()+850; lyricSide=-lyricSide; if (e.line) noteLine(performance.now()); render(); }
+  else if (e.type === 'audio_level') { audio.bass=clamp(Number(e.bass)||0,0,1); audio.mid=clamp(Number(e.mid)||0,0,1); audio.treble=clamp(Number(e.treble)||0,0,1); audio.beat=clamp(Number(e.beat)||0,0,1); audio.stamp=performance.now(); }
+  else if (e.type === 'flash') { flash = { mood:e.mood, until: performance.now() + (e.ms || (e.mood==='panic'?3500:2500)) };
+    if (e.text) { say = { text:e.text, until: Date.now() + (e.ms || 2500) }; render(); } }
+  else if (e.type === 'typing') kps = Number(e.kps) || 0;
+  else if (e.type === 'notify') { notifyUntil = performance.now() + 1300; startle = Math.max(startle, .5); }
 };
 
 // ---- text area ----
 const fmt = s => { s = Math.floor(s); return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
 function render() {
+  const ambient = st.mode === 'idle';      // only idle gets the big lyrics; coding/dsa/pomo keep their text
+  document.body.classList.toggle('music-view', music.on && ambient);
+  document.body.classList.toggle('music-compact', music.on && !ambient);
   const el = (Date.now() - st.since) / 1000, T = $('#title'), S = $('#sub');
   if (st.mode === 'dsa') {
     T.textContent = st.text || 'what are we solving today?';
@@ -116,52 +146,102 @@ function render() {
   } else if (st.mode === 'coding') {
     T.textContent = 'nvim'; S.textContent = `in the editor for ${fmt(el)}`;
   } else if (st.mode === 'pomo') {
-    const left = Math.max(0, st.left - (Date.now() - st.recv));
-    T.textContent = fmt(Math.ceil(left / 1000));
-    S.textContent = `${st.phase === 'focus' ? 'focus' : st.phase === 'long' ? 'long break' : 'break'}   ${'●'.repeat(st.done)}${'○'.repeat(4 - st.done)}`;
-  } else if (st.mode === 'music') {
-    T.textContent = lyric; S.textContent = '';
+    const left=Math.max(0,st.left-(Date.now()-(st.recv||Date.now())));
+    T.textContent=fmt(Math.ceil(left/1000));
+    S.textContent=`${st.phase==='focus'?'focus':st.phase==='long'?'long break':'break'}   ${'●'.repeat(st.done||0)}${'○'.repeat(4-(st.done||0))}`;
   } else {
     const d = new Date(); T.textContent = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     S.textContent = '';
   }
-  if (say && Date.now() < say.until) S.textContent = say.text;
+  if (music.on && ambient) { T.textContent = music.name || '♪ music'; S.textContent = ''; }
+  const lyricEl = $('#lyric');
+  lyricEl.textContent = music.on ? (lyric || (music.status === 'instrumental' ? '♪ instrumental ♪' : '')) : '';
+  lyricEl.style.opacity = lyric ? '1' : '.65';
+  lyricEl.style.transform = lyric ? 'translateY(0)' : 'translateY(3px)';
+  if(say && Date.now()<say.until) { S.textContent=say.text; if (music.on && ambient) T.textContent=say.text; }
 }
-setInterval(render, 250); render();
+setInterval(render, 1000); render();
 
 // ---- eyes ----
+// ---- music mood: hype on loud/bass-heavy parts, chill on quiet ones, overjoyed flash on a sudden drop ----
+const mus = {quick:0, fast:0, slow:0, t:0, warm:0, lvl:'vibe', dropCool:0};
+function musicMood(now) {
+  const dt = Math.min(.25, Math.max(0, (now - mus.t)/1000)); mus.t = now;
+  if (now - audio.stamp > 700) { mus.warm = 0; mus.quick = mus.fast = mus.slow = 0; return mus.lvl = 'vibe'; }  // no live audio
+  const x = audio.bass*.55 + audio.mid*.3 + audio.treble*.15, a = tau => 1 - Math.exp(-dt/tau);
+  mus.quick += (x-mus.quick)*a(.25); mus.fast += (x-mus.fast)*a(1.5); mus.slow += (x-mus.slow)*a(8);
+  mus.warm += dt;
+  if (mus.warm < 4) mus.slow = mus.fast;                                            // baseline = how this song starts out
+  if (mus.warm < 4 || mus.slow < .05) return mus.lvl = 'vibe';                    // still learning this song / silence
+  if (mus.quick - mus.fast > .28 && now > mus.dropCool) {                          // sudden drop
+    mus.dropCool = now + 9000; flash = {mood:'overjoyed', until: now + 1100}; return 'overjoyed';
+  }
+  if (mus.lvl === 'hype')       { if (mus.fast < mus.slow*1.08 + .02) mus.lvl = 'vibe'; }
+  else if (mus.lvl === 'chill') { if (mus.fast > mus.slow*.85) mus.lvl = 'vibe'; }
+  else if (mus.fast > mus.slow*1.2 + .04) mus.lvl = 'hype';
+  else if (mus.fast < mus.slow*.7 - .02) mus.lvl = 'chill';
+  return mus.lvl;
+}
 function level(now) {
-  if (poke.lv && now < poke.until) return poke.lv;
+  // Lyrics view stays calm and takes priority over pokes, idle moods and flashes.
+  if(poke.lv && now<poke.until) return poke.lv;
+  if(poke.lv && now>=poke.until) poke.lv=null;
+  // Lyrics view is a calm listening mode: don't let idle moods or external
+  // panic/worry flashes take over the face while the lyric is the focus.
   if (flash && now < flash.until) return flash.mood;
   flash = null;
   if (st.mode === 'dsa' && Date.now() - st.since > 1500000) return 'worry';
+  if (kps >= 4.5 && st.mode !== 'pomo') return 'focus';
+  if (music.on) return musicMood(now);                 // nothing else going on: vibe to the music
   const i = idleNow() / 1000;
-  if (st.mode === 'pomo') return st.phase === 'focus' ? (i > 90 ? 'bored' : 'focus') : (i > 180 ? 'sleepy' : 'chill');
-  return i > 120 ? 'asleep' : i > 60 ? 'sleepy' : i > 20 ? 'bored' : 'alert';
+  return i > 180 || energy<8 ? 'asleep' : i > 65 || energy<25 ? 'sleepy' : i > 18 || energy<55 ? 'bored' : 'alert';
 }
 function frame(now) {
   const lv = level(now), i = idleNow() / 1000;
+  const dt=1/60; if(i>2){energy=clamp(energy-.025,0,100);attention=clamp(attention-.035,0,100);} else {energy=clamp(energy+.12,0,100);attention=clamp(attention+.08,0,100);}
+  $('#status').textContent=`energy ${Math.round(energy)} · attention ${Math.round(attention)}`;
   if (wasIdle > 30 && i < 1.5) startle = 1;           // woke up: jolt
   wasIdle = i; startle *= 0.94;
 
-  let lidT = 0, botT = 0, pr = 38, shake = 0, slantT = 0, gaze = tgt;
-  if (lv === 'bored' || lv === 'sleepy' || lv === 'chill') {
+  let lidT = 0, botT = 0, pr = 38, shake = 0, gaze = tgt;
+  if(lv==='annoyed'){lidT=.38;pr=32;shake=1.2;}
+  if(lv==='angry'){lidT=.5;pr=22;shake=2.5;gaze={x:0,y:-.1};}
+  if(lv==='ignore') lidT=1;
+  const audioFresh = music.on && now-audio.stamp<700;
+  const bassPulse = audioFresh ? audio.bass : 0;
+  const treblePulse = audioFresh ? audio.treble : 0;
+  // Brief downward glance whenever a new lyric line arrives; alternate sides slightly.
+  const pk = !(lv==='vibe' || lv==='hype' || lv==='chill' || lv==='overjoyed');   // only music moods follow the lyrics
+  if (music.on && !pk && now<lyricGlanceUntil) gaze={x:lyricSide*.16,y:.62};
+  else if(music.on && !pk && audioFresh) gaze={x:Math.sin(now/520)*(.12+audio.mid*.12),y:-.04+Math.sin(now/190)*bassPulse*.10};
+  if (lv === 'bored' || lv === 'sleepy') {
     if (now > wander.next) { wander = { x: Math.random()*1.6-.8, y: Math.random()*1.2-.7, next: now + 1200 + Math.random()*3000 }; }
     gaze = wander;
-    if (lv !== 'chill' && now > roll.next) { roll.until = now + 1600; roll.next = now + 15000 + Math.random()*20000; }  // eye roll
-    if (lv !== 'chill' && now < roll.until) { const a = (now - (roll.until-1600))/1600*Math.PI*2; gaze = { x:Math.cos(a)*.9, y:Math.sin(a)*.8 }; }
-    lidT = lv === 'bored' ? .35 : lv === 'sleepy' ? .62 : .2;
-    if (lv === 'chill') botT = .18;
+    if (now > roll.next) { roll.until = now + 1600; roll.next = now + 15000 + Math.random()*20000; }  // eye roll
+    if (now < roll.until) { const a = (now - (roll.until-1600))/1600*Math.PI*2; gaze = { x:Math.cos(a)*.9, y:Math.sin(a)*.8 }; }
+    lidT = lv === 'bored' ? .35 : .62;
     if (lv === 'sleepy') gaze = { x: gaze.x*.4, y: .5 };
   }
-  if (lv === 'asleep' || lv === 'ignore') lidT = 1;
-  if (lv === 'focus') { lidT = .22; slantT = 5; pr = 34; }
-  if (lv === 'annoyed') { lidT = .38; slantT = 14; pr = 32; }
-  if (lv === 'angry') { lidT = .5; slantT = 24; pr = 22; shake = 2.5; gaze = { x:0, y:-.1 }; }
+  if (lv === 'asleep') lidT = 1;
+  if (lv==='sleepy' && Math.random()<0.0008) { flash={mood:'yawn',until:now+900}; }
+  if (music.on && audioFresh) { pr += bassPulse*9; lidT=Math.max(lidT,treblePulse*.16); }
+  if (lv==='happy'||lv==='overjoyed') botT=.38;
+  if (lv==='win') {pr=24; shake=1.2;}
+  if (lv==='flinch'||lv==='annoyed') {pr=27; shake=2.5;}
+  if (lv==='panic') {pr=18; shake=5;}
+  if (lv==='overjoyed') {pr=25; gaze={x:0,y:-.1};}
+  if (new Date().getHours()>=2 && new Date().getHours()<6 && lv!=='asleep') { lidT=Math.max(lidT,.42); }
+  if (now>micro.next) { micro.type=['double','squint','side','fly'][Math.floor(Math.random()*4)]; micro.until=now+(micro.type==='double'?420:1100); micro.next=now+5000+Math.random()*11000; }
+  if(now<micro.until){ if(micro.type==='squint') lidT=Math.max(lidT,.55); if(micro.type==='side') gaze={x:.85,y:0}; if(micro.type==='fly') gaze={x:Math.sin(now/90)*.85,y:Math.cos(now/130)*.5}; if(micro.type==='double' && now-micro.until>-210) blinkStart=now-80; }
   if (lv === 'happy') { botT = .38; }
   if (lv === 'worry') { pr = 26; shake = 1.5; }
   if (lv === 'panic') { pr = 18; shake = 5; }
   $('#z').classList.toggle('on', lv === 'asleep');
+  $('#face').classList.toggle('sway', music.on && !pk);
+  $('#face').classList.toggle('audio-live', music.on && audioFresh);
+  $('#face').style.animationDuration = `${(3.2-bassPulse*1.1).toFixed(2)}s`;
+  const MOUTH={win:'M222 272 Q256 288 290 258',happy:'M215 268 Q250 292 285 268',overjoyed:'M210 262 Q250 298 290 262',vibe:'M228 268 Q250 280 272 268',strain:'M222 278 Q236 268 250 278 T278 278',judge:'M228 278 L272 278',hype:'M212 264 Q250 296 288 264',chill:'M232 270 Q250 275 268 270',yawn:'M230 250 Q250 296 270 250',worry:'M222 278 Q236 268 250 278 T278 278',angry:'M222 284 Q250 264 278 284',annoyed:'M228 278 Q250 270 272 278',panic:'M236 262 Q250 294 264 262 Q250 254 236 262Z',flinch:'M226 280 Q238 270 250 280 T274 280'};
+  const mouth=$('#mouth'), md=MOUTH[lv]; mouth.style.opacity=md?1:0; if(md) mouth.setAttribute('d',md);
 
   // blink (slower and rarer when bored, occasional double-blink)
   if (now > blinkAt) {
@@ -170,23 +250,45 @@ function frame(now) {
   }
   const bp = (now - blinkStart) / 170, blink = bp >= 0 && bp <= 1 ? Math.sin(bp*Math.PI) : 0;
 
-  lid += (lidT - lid) * .12; bot += (botT - bot) * .15; sl += (slantT - sl) * .15;
-  const k = (lv==='alert' || lv==='focus' || lv==='annoyed' || lv==='angry') ? .2 : .08;
-  g.x += (gaze.x - g.x) * k; g.y += (gaze.y - g.y) * k;
-  const top = Math.max(lid, blink) * 2*110 * (1 - startle*.4);
+  // emotion shaping: [lid tilt (+ angry, - worried), brow lift px, brow tilt]
+  if (lv==='happy') lidT=Math.min(lidT,.08);
+  if (lv==='strain') { pr=24; shake=1.2; lidT=Math.max(lidT,.28); }
+  if (lv==='focus')  { pr=34; lidT=Math.max(lidT,.28); gaze={x:0,y:.55}; }
+  if (lv==='judge')  { lidT=Math.max(lidT,.45); gaze={x:.8,y:.1}; }
+  if (now < notifyUntil) gaze={x:.95,y:-.85};          // notification: glance at the corner it appears in
+  $('#sweat').style.opacity = lv==='strain' ? 1 : 0;
+  if (lv==='vibe') botT=.2;
+  if (lv==='hype') { botT=.42; lidT=Math.min(lidT,.06); }
+  if (lv==='chill') { lidT=Math.max(lidT,.3); botT=.1; }
+  if (lv==='overjoyed') botT=.62;
+  const EX={happy:[-.15,10,-.2],overjoyed:[-.2,16,-.3],vibe:[-.1,6,-.1],strain:[-.5,6,-.6],focus:[.25,-8,.35],judge:[.3,-4,.2],hype:[-.2,14,-.25],chill:[-.1,-4,0],annoyed:[.45,-6,.5],angry:[1,-12,1],ignore:[.8,-10,.8],
+            worry:[-1,8,-1],flinch:[-.6,2,-.7],panic:[-.6,22,-.8],yawn:[0,2,0],bored:[0,-6,0],sleepy:[-.15,-12,0],asleep:[0,-14,0]};
+  const e = EX[lv] || [0,0,0];
+  if (lv==='worry') lidT=Math.max(lidT,.25);
+  if (lv==='yawn') lidT=Math.max(lidT,.55);
+  ex.tilt += (e[0]-ex.tilt)*.15; ex.brow += (e[1]-ex.brow)*.15; ex.bt += (e[2]-ex.bt)*.15;
+
+  lid += (lidT - lid) * .12; bot += (botT - bot) * .15;
+  g.x += (gaze.x - g.x) * (lv==='alert' ? .2 : .08); g.y += (gaze.y - g.y) * (lv==='alert' ? .2 : .08);
+  const k = 1 - startle*.4, lidPx = lid*220*k, blinkPx = blink*220*k, tp = ex.tilt*38;
+  const hIn = clamp(Math.max(lidPx+tp, blinkPx),0,230), hOut = clamp(Math.max(lidPx-tp, blinkPx),0,230);
   const sx = shake ? Math.sin(now/28)*shake : 0, sy = shake ? Math.cos(now/33)*shake : 0;
   const wide = startle * 8;
+  const cb = bot*198, eb = bot*77, y0 = 240-eb, yc = 240-cb, yq = 2*yc - y0;
 
-  for (const side of ['L','R']) {
+  for (const [side,a0,b0,inner] of [['L',30,230,'r'],['R',270,470,'l']]) {
     const gEl = $('#'+side);
     const p = gEl.querySelector('.p');
     p.setAttribute('r', pr + wide);
     p.setAttribute('transform', `translate(${g.x*34 + sx},${g.y*26 + sy})`);
-    const lt = gEl.querySelector('.lt'), lb = gEl.querySelector('.lb');
-    lt.setAttribute('height', top + 120);
-    lt.setAttribute('transform', `rotate(${(side==='L' ? sl : -sl) * (1 - blink)},${side==='L' ? 130 : 370},${20 + top})`);
-    const bh = bot * 220; lb.setAttribute('y', 240 - bh); lb.setAttribute('height', bh);
+    const ha = inner==='r' ? hOut : hIn, hb = inner==='r' ? hIn : hOut;
+    gEl.querySelector('.lt').setAttribute('points', `${a0},-20 ${b0},-20 ${b0},${20+hb} ${a0},${20+ha}`);
+    gEl.querySelector('.lb').setAttribute('d', `M${a0},262 L${a0},${y0} Q${(a0+b0)/2},${yq} ${b0},${y0} L${b0},262Z`);
   }
+  // eyebrows: lift/tilt with mood, sink with the lids, jump when startled
+  const by = Math.max(-36, -12 - ex.brow - grooveLift(now, lv) + lidPx*.18 - startle*14), yi = Math.max(-38, by + ex.bt*20), yo = Math.max(-38, by - ex.bt*10);
+  const bL=$('#bL'), bR=$('#bR');
+  bL.setAttribute('y1',yo+sy); bL.setAttribute('y2',yi+sy); bR.setAttribute('y1',yi+sy); bR.setAttribute('y2',yo+sy);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

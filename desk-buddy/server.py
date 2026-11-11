@@ -1,11 +1,34 @@
 #!/usr/bin/env python3
 """desk-buddy server (stdlib only). Hooks POST /event, the phone listens on /events (SSE)."""
-import bisect, glob, json, os, queue, re, select, shlex, shutil, struct, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
+import bisect, glob, hmac, json, os, queue, re, secrets, select, shlex, shutil, signal, socket, struct, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("PORT", 3030))
 HERE = os.path.dirname(os.path.abspath(__file__))
+TOKEN_PATH = os.path.join(HERE, ".buddy_token")
+
+
+def load_token():
+    """Password for LAN access (the phone). 127.0.0.1 never needs it. BUDDY_TOKEN=off turns it off."""
+    t = os.environ.get("BUDDY_TOKEN")
+    if t is not None:
+        return None if t.lower() in ("", "off", "none") else t
+    try:
+        return open(TOKEN_PATH).read().strip() or None
+    except OSError:
+        pass
+    t = secrets.token_urlsafe(9)
+    try:
+        fd = os.open(TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, t.encode())
+        os.close(fd)
+    except OSError:
+        pass
+    return t
+
+
+TOKEN = load_token()
 
 lock = threading.Lock()
 clients = set()                       # one queue per connected phone
@@ -22,6 +45,7 @@ dsa_started = 0.0
 dsa_history_path = os.path.join(HERE, "dsa_history.json")
 pomo = None
 pomo_lock = threading.Lock()
+typing_force = 0.0                    # `buddy typing` holds the locked-in look until this time
 keys = deque(maxlen=300)              # key-press TIMESTAMPS only (never which key), for typing speed
 fail_streak = 0
 music = {"on": False, "name": "", "line": "", "status": ""}   # lyrics layer: independent of the mode
@@ -50,8 +74,15 @@ def set_mode(mode, text="", **extra):
 
 
 def handle(ev):
-    global last_lyric, pomo
+    global last_lyric, pomo, typing_force, site_dsa
     t = ev.get("type")
+    if t == "site":
+        return on_site(ev)
+    if t == "judge":
+        return on_judge(ev)
+    if t == "typing":                 # `buddy typing [seconds]`: hold the locked-in look for testing
+        typing_force = time.time() + float(ev.get("force", 6))
+        return
     if t == "pomo":
         return pomo_cmd(ev)
     if t == "cmd":
@@ -66,6 +97,7 @@ def handle(ev):
     elif t == "dsa_start":
         global dsa_started
         dsa_started = time.time()
+        site_dsa = False
         set_mode("dsa", ev.get("text") or "today's problem")
     elif t == "dsa_solved":
         record_dsa(ev.get("text") or state.get("text") or "Solved")
@@ -396,6 +428,81 @@ class Lyrics:
 
 
 
+greeted, away, away_since = False, False, 0.0
+site_seen, site_dsa, judge_wrongs = 0.0, False, {}
+SITE_HELLO = {"leetcode": "leetcode. let's see.", "codeforces": "codeforces. stay calm."}
+
+
+def greeting_text(hour, away_s=0.0, start=False):
+    if 5 <= hour < 12 and (start or away_s >= 2 * 3600):
+        return "good morning"
+    if hour >= 22 or hour < 5:
+        return "up late?"
+    return "hi" if start else "welcome back"
+
+
+def greet(start=False, away_s=0.0):
+    react("happy", greeting_text(time.localtime().tm_hour, away_s, start), 3.5)
+
+
+def presence_tick(now):
+    """Welcome back after 30+ minutes with no keyboard/mouse activity."""
+    global away, away_since
+    idle = now - last_move
+    if idle > 1800 and not away:
+        away, away_since = True, last_move
+    elif away and idle < 5:
+        away = False
+        greet(away_s=now - away_since)
+
+
+def on_site(ev):
+    """Heartbeat from the browser userscript (hooks/buddy-judge.user.js) while a LeetCode/Codeforces tab is in front."""
+    global site_seen, site_dsa
+    site = str(ev.get("site", ""))[:20]
+    title = str(ev.get("title", ""))[:80]
+    if ev.get("leave"):                                      # tab closed: hand the face back in ~8 s
+        site_seen = time.time() - 37                         # (the short grace lets a page reload come straight back)
+        return
+    site_seen = time.time()
+    if site in SITE_HELLO and ready("site_" + site, 4 * 3600):
+        react("focus", SITE_HELLO[site], 3.5)
+    if pomo is None and state["mode"] in ("idle", "coding"):
+        site_dsa = True
+        set_mode("dsa", title or site)                       # problem name + a timer, like `buddy dsa`
+    elif site_dsa and state["mode"] == "dsa" and title and state.get("text") != title:
+        set_mode("dsa", title)                               # moved on to another problem
+
+
+def on_judge(ev):
+    """A verdict seen by the userscript: accepted / wrong / tle / mle / error / ce."""
+    verdict = str(ev.get("verdict", ""))
+    title = str(ev.get("title") or (state.get("text") if site_dsa else "") or "")[:80]
+    if verdict == "accepted":
+        judge_wrongs.pop(title, None)
+        if title and title not in SITE_HELLO and ready("solved_" + title, 1800):
+            record_dsa(title)                                # counts toward the streak
+        react("overjoyed", "accepted!", 4)
+    elif verdict in ("wrong", "tle", "mle", "error", "ce"):
+        n = judge_wrongs[title] = judge_wrongs.get(title, 0) + 1
+        text = {"wrong": "wrong answer", "tle": "time limit...", "mle": "memory limit",
+                "error": "runtime error", "ce": "compile error"}[verdict]
+        if n >= 3:
+            react("worry", text + ". breathe.", 4)
+        else:
+            react("flinch", text, 3)
+
+
+def site_tick(now):
+    global site_dsa
+    if site_dsa:
+        if state["mode"] != "dsa":
+            site_dsa = False                                 # something else took over (tmux dsa, manual)
+        elif now - site_seen > 45:                           # tab closed or left the site
+            site_dsa = False
+            set_mode("coding" if nvim_up else "idle")
+
+
 def record_dsa(problem):
     try:
         data = json.load(open(dsa_history_path))
@@ -723,6 +830,105 @@ def net_up():
         return True
 
 
+def typing_loop():
+    """'Locked in' state for the face: on after a short burst of typing, off after ~3 s of quiet.
+    Only key *timestamps* are used (never which key)."""
+    on, last_sent = False, 0.0
+    while True:
+        time.sleep(0.25)
+        now = time.time()
+        try:
+            recent = sum(1 for t in list(keys) if now - t < 5)
+            since = now - keys[-1] if keys else 1e9
+        except (RuntimeError, IndexError):
+            recent, since = 0, 1e9
+        was = on
+        if now < typing_force:
+            on = True
+        elif not on and recent >= 8:
+            on = True
+        elif on and since > 3:
+            on = False
+        if on != was or now - last_sent >= 1:
+            last_sent = now
+            send({"type": "typing", "on": on, "kps": round(recent / 5.0, 1)})
+        # typing HARD (20+ presses in 5 s, ~4/s): say it once, then stay quiet for 10 minutes
+        if on and recent >= 20 and pomo is None and ready("locked_in", 600):
+            react("focus", "locked in are we?", 3.5)
+
+
+class BeatTracker:
+    """Bass onset detector: positive spectral flux vs. an adaptive threshold, with a refractory gap."""
+    def __init__(self):
+        self.prev, self.avg, self.last = 0.0, 0.0, 0.0
+        self.hist = deque(maxlen=60)
+
+    def update(self, e, now):
+        flux, self.prev = max(0.0, e - self.prev), e
+        self.avg += (e - self.avg) * 0.02
+        self.hist.append(flux)
+        if len(self.hist) < 15 or self.avg < 1e-4:                 # warming up / silence
+            return False
+        mean = sum(self.hist) / len(self.hist)
+        sd = (sum((x - mean) ** 2 for x in self.hist) / len(self.hist)) ** 0.5
+        if flux > mean + 1.6 * sd + 0.06 * self.avg and now - self.last > 0.22:
+            self.last = now
+            return True
+        return False
+
+
+def audio_loop():
+    """Live audio -> bass/mid/treble levels + beat onsets (`audio_level` events), straight from
+    PulseAudio/PipeWire. Replaces running `spectrum.py --buddy`. Only captures while music plays."""
+    try:
+        import numpy as np
+    except ImportError:
+        print("numpy not installed: no beat reactions (sudo pacman -S python-numpy)")
+        return
+    if shutil.which("parec") is None:
+        print("parec not found: no beat reactions (sudo pacman -S libpulse)")
+        return
+    RATE, N = 44100, 4096
+    HOP = RATE // 60
+    source = os.environ.get("BUDDY_AUDIO_SOURCE", "@DEFAULT_MONITOR@")
+    window = np.hanning(N).astype(np.float32)
+    norm = N / 4.0
+    freqs = np.fft.rfftfreq(N, 1.0 / RATE)
+    bass_m, mid_m, tre_m = (freqs >= 35) & (freqs < 180), (freqs >= 180) & (freqs < 2500), (freqs >= 2500) & (freqs < 9000)
+    proc, buf, tracker, frame = None, np.zeros(N, np.float32), BeatTracker(), 0
+    while True:
+        if not music["on"]:
+            if proc:
+                proc.terminate()
+                proc = None
+            time.sleep(0.5)
+            continue
+        if proc is None:
+            proc = subprocess.Popen(["parec", "-d", source, "--format=s16le", f"--rate={RATE}",
+                                     "--channels=2", "--latency-msec=20"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            buf[:] = 0
+            tracker = BeatTracker()
+        data = proc.stdout.read(HOP * 4)
+        if not data:                                             # parec died (no such source, etc.)
+            proc = None
+            time.sleep(2)
+            continue
+        x = np.frombuffer(data[: len(data) // 4 * 4], dtype=np.int16).reshape(-1, 2)
+        mono = x.astype(np.float32).mean(axis=1)[-N:] / 32768.0
+        buf = np.concatenate((buf[len(mono):], mono))
+        frame += 1
+        if frame % 2:                                            # ~30 analyses per second
+            continue
+        spec = np.abs(np.fft.rfft(buf * window)) / norm
+        bass = float(np.clip(spec[bass_m].max() * 16.0, 0.0, 1.0))
+        mid = float(np.clip(spec[mid_m].max() * 12.0, 0.0, 1.0))
+        treble = float(np.clip(spec[tre_m].max() * 10.0, 0.0, 1.0))
+        beat = tracker.update(float(np.sqrt((spec[bass_m] ** 2).sum())), time.time())
+        send({"type": "audio_level", "bass": round(bass, 3), "mid": round(mid, 3),
+              "treble": round(treble, 3), "beat": 1.0 if beat else 0.0})
+
+
 def watch_loop():
     hi = runaway = 0
     prev_status, bat_warned = None, False
@@ -733,6 +939,8 @@ def watch_loop():
         time.sleep(1)
         n += 1
         now = time.time()
+        presence_tick(now)
+        site_tick(now)
         # CPU: sustained load -> strain, a runaway process -> panic
         cpu = cpu_percent()
         hi = hi + 1 if cpu >= 90 else 0
@@ -760,9 +968,6 @@ def watch_loop():
         if net_votes >= 3:
             net_state, net_votes = up, 0
             react("happy" if up else "worry", "back online" if up else "offline", 3)
-        # typing speed (presses per second over the last 3s)
-        kps = sum(1 for t in keys if now - t < 3) / 3.0
-        send({"type": "typing", "kps": round(kps, 1)})
         if n % 2 == 0:
             send({"type": "sys", "cpu": cpu, "battery": cap, "online": net_state})
         # late night + sitting too long (only while you're actually at the machine)
@@ -796,8 +1001,23 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def authorized(self):
+        if TOKEN is None or self.client_address[0] in ("127.0.0.1", "::1"):
+            return True
+        given = self.headers.get("X-Buddy-Token") or urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("t", [""])[0]
+        return hmac.compare_digest(given.encode(), TOKEN.encode())
+
+    def deny(self):
+        body = b"password needed: open the phone URL the server prints at startup (it ends in ?t=...)"
+        self.send_response(401)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        if self.path == "/events":
+        if not self.authorized():
+            return self.deny()
+        if urllib.parse.urlsplit(self.path).path == "/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -810,6 +1030,10 @@ class H(BaseHTTPRequestHandler):
             except (OSError, ValueError): pass
             with lock:
                 clients.add(q)
+            global greeted
+            if not greeted:                                  # first phone/browser of this server run: say hi
+                greeted = True
+                threading.Timer(1.0, greet, kwargs={"start": True}).start()
             try:
                 while True:
                     try:
@@ -841,6 +1065,8 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if not self.authorized():
+            return self.deny()
         if self.path != "/event":
             self.send_response(404); self.end_headers(); return
         try:
@@ -860,8 +1086,30 @@ if __name__ == "__main__":
     threading.Thread(target=tick_loop, daemon=True).start()
     threading.Thread(target=music_loop, daemon=True).start()
     threading.Thread(target=watch_loop, daemon=True).start()
+    threading.Thread(target=typing_loop, daemon=True).start()
+    threading.Thread(target=audio_loop, daemon=True).start()
     threading.Thread(target=notify_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), H)
     srv.daemon_threads = True
     print(f"buddy on :{PORT}")
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+    except OSError:
+        ip = "<laptop-ip>"
+    finally:
+        s.close()
+    if TOKEN:
+        print(f"phone:  http://{ip}:{PORT}/?t={TOKEN}")
+        print(f"laptop: http://localhost:{PORT}/   (local needs no password; phone/LAN needs ?t=)")
+    else:
+        print("WARNING: no password set; anyone on this network can send events")
+
+    def bye(*_):
+        react("yawn", "bye", 2)
+        time.sleep(0.7)                                      # let the phone receive it
+        os._exit(0)
+    signal.signal(signal.SIGTERM, bye)
+    signal.signal(signal.SIGINT, bye)
     srv.serve_forever()

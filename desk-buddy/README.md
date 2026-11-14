@@ -4,7 +4,7 @@ A pair of eyes for an old phone. It sits under the monitor, watches what happens
 
 It is a small personal project: one Python file on the laptop, one HTML file on the phone, no frameworks, no build step.
 
-![Every mood](/faces.png)
+![Every mood](faces.png)
 
 
 
@@ -20,11 +20,11 @@ It is a small personal project: one Python file on the laptop, one HTML file on 
 - **Says things.** Every reaction has several lines, never the same one twice in a row, and some depend on context (the 5th commit of the day, the 4th failed build in a row, the time of day).
 - **Can be poked.** Tap the phone: startled, annoyed, angry, and finally it ignores you.
 
-![Idle acts](/idle-acts.png)
+![Idle acts](idle-acts.png)
 
 ## How it fits together
 
-![Architecture](/architecture.png)
+![Architecture](architecture.png)
 
 Sources send small JSON events to the server (`POST /event`). The server decides what they mean and keeps the current state. The phone page connects once (`GET /events`, server-sent events) and draws whatever the server says. The page holds no logic about your machine, so it can be reloaded at any time and picks up exactly where things are.
 

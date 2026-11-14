@@ -19,9 +19,30 @@
   #info { text-align:center; min-height:22vh; width:100%; }
   #title { font-size:clamp(18px,4.5vh,40px); }
   #sub { font-size:clamp(14px,3vh,26px); color:var(--dim); margin-top:.6em; }
-  #bee { position:fixed; left:0; top:0; width:7vh; height:4.7vh; pointer-events:none; z-index:6; will-change:transform; }
-  #bee .wing { transform-origin:33px 14px; animation:beeflap .09s linear infinite alternate; }
-  @keyframes beeflap { from { transform:scaleY(1); } to { transform:scaleY(.3); } }
+  /* lyrics view: spectrum.py's phone page, shown by `buddy lyrics` */
+  #lyricsView { --accent:#ff2bd6; --k:1; --fs:calc(min(8vw,8vh)*var(--k)); --lh:calc(var(--fs)*2.5);
+    position:fixed; inset:0; z-index:50; background:#000; color:#fff; display:none;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  body.lyrics-view #lyricsView { display:block; }
+  #lvTtl { position:absolute; top:0; left:0; right:0; padding:calc(env(safe-area-inset-top,0px) + 2.2vh) 6vw 0; text-align:center;
+    font-size:calc(var(--fs)*.45); color:#6b6b7b; letter-spacing:.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #lvStage { position:absolute; inset:0; }
+  .lvline { position:absolute; left:0; right:0; top:50%; box-sizing:border-box; padding:0 6vw; text-align:center;
+    font-size:var(--fs); line-height:1.2; color:#fff; --slot:0; --sc:.82; opacity:0;
+    transform:translateY(calc(-50% + var(--slot)*var(--lh))) scale(var(--sc));
+    transition:transform .6s cubic-bezier(.2,.8,.2,1), opacity .6s, text-shadow .6s; }
+  .lvline[data-s="-1"], .lvline[data-s="1"] { opacity:.45; }
+  .lvline[data-s="2"] { opacity:.22; }
+  .lvline[data-s="0"] { --sc:1.12; opacity:1; font-weight:700; text-shadow:0 0 .7em var(--accent); }
+  #lvMsg { position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); text-align:center; color:#6b6b7b;
+    font-style:italic; font-size:var(--fs); padding:0 6vw; display:none; }
+  #lvDot { position:absolute; right:3vw; bottom:calc(env(safe-area-inset-bottom,0px) + 2vh); width:8px; height:8px; border-radius:50%; background:#3a3a46; }
+  #lvDot.on { background:var(--accent); }
+  #fly { position:fixed; left:0; top:0; width:3.6vh; height:2.6vh; pointer-events:none; z-index:6; will-change:transform; }
+  #fly .w { transform-origin:33px 20px; animation:flyw .045s linear infinite alternate; }
+  #fly .w2 { animation-direction:alternate-reverse; }
+  #fly.rest .w { animation-duration:.7s; }
+  @keyframes flyw { from { transform:rotate(-10deg); } to { transform:rotate(10deg); } }
   #z { position:fixed; right:12vw; top:8vh; font-size:5vh; color:var(--dim); opacity:0; }
   #z.on { animation: zz 2.4s ease-in-out infinite; }
   #status { position:fixed; left:4vw; bottom:3vh; color:var(--dim); font-size:clamp(10px,1.6vh,15px); }
@@ -35,8 +56,6 @@
   /* dsa/pomo + music: the timer/problem stays, lyrics sit under it, smaller */
   body.music-compact #lyric { font-size:clamp(16px,3.4vh,34px); color:var(--dim); opacity:1; margin-top:.5em; }
   #mouth { fill:none; stroke:var(--eye); stroke-width:7; stroke-linecap:round; opacity:0; transition:all .2s; }
-  #face.sway { transform-origin:50% 50%; animation:sway 2.8s ease-in-out infinite; }
-  @keyframes sway { 0%,100%{transform:rotate(-1deg) translateY(0)} 50%{transform:rotate(1deg) translateY(5px)} }
   @keyframes zz { 0%{opacity:0;transform:translate(0,10px)} 30%{opacity:.9} 100%{opacity:0;transform:translate(14px,-30px)} }
   @media (prefers-reduced-motion: reduce) { #z.on { animation:none; opacity:.7; } }
 </style>
@@ -63,13 +82,14 @@
   <path id="mouth" d="M220 265 Q250 265 280 265"/>
 </svg>
 <div id="z">z z</div>
-<div id="bee" style="display:none"><svg viewBox="0 0 60 40" width="100%" height="100%" aria-hidden="true">
-  <defs><clipPath id="beeBody"><ellipse cx="30" cy="24" rx="17" ry="11"/></clipPath></defs>
-  <g class="wing"><ellipse cx="27" cy="10" rx="10" ry="6" fill="#dff3ff" opacity=".78"/><ellipse cx="38" cy="11" rx="9" ry="5.5" fill="#dff3ff" opacity=".66"/></g>
-  <ellipse cx="30" cy="24" rx="17" ry="11" fill="#f5c518"/>
-  <path clip-path="url(#beeBody)" d="M23 12 q-3 12 0 24 M31 12 q-3 12 0 24 M39 12 q-3 12 0 24" stroke="#1a1a1a" stroke-width="4.5" fill="none"/>
-  <path d="M13 25 l-7 2" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round"/>
-  <circle cx="49" cy="22" r="7" fill="#1a1a1a"/><circle cx="51" cy="20" r="1.9" fill="#fff"/>
+<div id="lyricsView"><div id="lvTtl"></div><div id="lvStage"></div><div id="lvMsg"></div><div id="lvDot"></div></div>
+<div id="fly" style="display:none"><svg viewBox="0 0 56 40" width="100%" height="100%" aria-hidden="true">
+  <g stroke="#55555f" stroke-width="1" stroke-linecap="round" fill="none"><path d="M30 20 L25 9 M33 20 L35 8 M36 21 L43 11 M30 20 L25 31 M33 20 L35 32 M36 19 L43 29"/></g>
+  <g class="w w1"><ellipse cx="29" cy="10" rx="14" ry="4.4" transform="rotate(-22 29 10)" fill="#d7ecff" opacity=".6" stroke="#9fb6c8" stroke-width=".6"/></g>
+  <g class="w w2"><ellipse cx="29" cy="30" rx="14" ry="4.4" transform="rotate(22 29 30)" fill="#d7ecff" opacity=".6" stroke="#9fb6c8" stroke-width=".6"/></g>
+  <ellipse cx="21" cy="20" rx="12" ry="7.6" fill="#2a2a30"/><path d="M14 14.5 q-2 5.5 0 11 M20 13 q-2.4 7 0 14" stroke="#3d3d46" stroke-width="1.6" fill="none"/>
+  <circle cx="35" cy="20" r="6.6" fill="#3a3a42"/><circle cx="44" cy="20" r="4.7" fill="#1d1d21"/>
+  <circle cx="45.6" cy="16.8" r="2.3" fill="#c0392b"/><circle cx="45.6" cy="23.2" r="2.3" fill="#c0392b"/>
 </svg></div>
 <div id="info"><div id="title"></div><div id="sub"></div><div id="lyric"></div></div><div id="status">energy 100 · attention 50</div>
 
@@ -77,27 +97,11 @@
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 let st = { mode:'idle', text:'', since:Date.now() }, idleMs = 0, flash = null, lyric = '', lyricAt = 0;
 let energy=100, attention=50, failureStreak=0, lastActivity=Date.now(), typingTimes=[], micro={next:performance.now()+5000,until:0,type:''}, pokeTimes=[];
-let audio={bass:0,mid:0,treble:0,beat:0,stamp:0,beatAt:-1e9}, lyricGlanceUntil=0, lyricSide=1;
 let poke={n:0,last:0,until:0,lv:null}, say=null, actx=null, kps=0, typingOn=false, notifyUntil=0;
 let tgt = {x:0,y:0}, g = {x:0,y:0}, lid = 0, bot = 0, startle = 0, wasIdle = 0;
 let wander = {x:0,y:0,next:0}, blinkAt = performance.now()+3000, blinkStart = -1e9, roll = {until:0,next:20000};
 const ex = {tilt:0, brow:0, bt:0};
-let music = {on:false, name:'', line:'', status:''}, lineTimes = [], groove = {period:1400, lastLine:-1e9};
-// each lyric line = one beat of "groove": the brows pop on it, and the nod speed follows how fast lines come
-function noteLine(now) {
-  groove.lastLine = now; lineTimes.push(now); if (lineTimes.length > 5) lineTimes.shift();
-  if (lineTimes.length >= 3) groove.period = clamp((lineTimes[lineTimes.length-1] - lineTimes[0]) / (lineTimes.length-1) / 2, 600, 2200);
-}
-function grooveLift(now, lv) {
-  if (!music.on || !(lv==='vibe' || lv==='hype' || lv==='chill')) return 0;
-  const amp = lv==='hype' ? 1.5 : lv==='chill' ? .45 : 1;
-  const nod = (Math.sin(now / groove.period * Math.PI * 2) * .5 + .5) * 5;       // steady head-nod
-  const hit = Math.max(0, 1 - (now - groove.lastLine) / 450) * 9;                 // pop on each new lyric line
-  const fresh = now - audio.stamp < 700;                                          // live audio from the server?
-  const pop = fresh ? Math.max(0, 1 - (now - audio.beatAt) / 280) * 11 : 0;      // brows pop on each real beat
-  const live = fresh ? audio.bass * 4 : 0;
-  return amp * (nod * (fresh ? .25 : 1) + hit + pop) + live;
-}   // lid tilt, brow lift, brow tilt (smoothed)
+let music = {on:false, name:'', line:'', status:''};   // lid tilt, brow lift, brow tilt (smoothed)
 const clamp = (v,a,b) => Math.min(b, Math.max(a, v));
 // fallback: input seen by this page itself (works on localhost even if the server can't read the cursor)
 let localLast = Date.now();
@@ -114,15 +118,15 @@ addEventListener('click', () => {
 });
 
 // Friendly poke ladder: startled, annoyed, angry, then temporarily ignores spam.
-const POKE_LINES=[null,null,'hey','...','stop.','stop.','i said stop.','last warning'];
 addEventListener('pointerdown', e => {
+  if (document.body.classList.contains('lyrics-view')) return;      // taps on the lyrics page don't poke the hidden face
   const now=performance.now(); localLast=Date.now();
   tgt={x:clamp((e.clientX/innerWidth-.5)*2,-1,1),y:clamp((e.clientY/innerHeight-.5)*2-.25,-1,1)};
   startle=Math.max(startle,.8);
   poke.n=now-poke.last<4000?poke.n+1:1; poke.last=now;
   const n=poke.n, hold=n<4?2500:4500;
   poke.lv=n===1?null:n<4?'annoyed':n<8?'angry':'ignore'; poke.until=now+hold;
-  const line=n>=8?'not talking to you':POKE_LINES[n];
+  const line = n>=8 ? L('poke8') : n>=6 ? L('poke6') : n>=4 ? L('poke4') : n===3 ? L('poke3') : n===2 ? L('poke2') : null;
   say=line?{text:line,until:Date.now()+hold}:null;
   render();
 });
@@ -158,15 +162,43 @@ addEventListener('click', keepAwake); addEventListener('touchend', keepAwake);
 keepAwake();
 
 // ---- events ----
-const es = new EventSource('/events' + location.search);   // ?t=password when opened from the phone
+// ---- lyrics view (spectrum.py's page): the same line animation, fed by `lyrics` events ----
+const lv = { stage:$('#lvStage'), msg:$('#lvMsg'), ttl:$('#lvTtl'), dot:$('#lvDot'), els:new Map(), song:null };
+{ const k = parseFloat(new URLSearchParams(location.search).get('size')); if (k > 0) $('#lyricsView').style.setProperty('--k', k); }
+function lvApply(d) {
+  $('#lyricsView').style.setProperty('--accent', d.accent || '#ff2bd6');
+  lv.ttl.textContent = d.title || '';
+  lv.msg.textContent = d.msg || ''; lv.msg.style.display = d.msg ? 'block' : 'none';
+  if (d.song !== lv.song) { lv.song = d.song; lv.els.forEach(div => div.remove()); lv.els.clear(); }
+  const cur = (typeof d.cur === 'number') ? d.cur : 0, keep = new Set(), lines = d.lines || [];
+  lines.forEach(ln => {
+    keep.add(ln.id);
+    let div = lv.els.get(ln.id); const slot = ln.id - cur;
+    if (!div) {
+      div = document.createElement('div'); div.className = 'lvline'; div.textContent = ln.text;
+      div.dataset.s = slot + 1; div.style.setProperty('--slot', slot + 1);
+      lv.stage.appendChild(div); lv.els.set(ln.id, div); void div.offsetWidth;          // start one slot below, then slide up
+    }
+    div.dataset.s = slot; div.style.setProperty('--slot', slot);
+  });
+  lv.els.forEach((div, id) => {
+    if (keep.has(id)) return;
+    const slot = Math.max(-4, Math.min(4, id - cur));
+    div.dataset.s = slot; div.style.setProperty('--slot', slot); lv.els.delete(id);
+    setTimeout(() => div.remove(), 700);
+  });
+}
+const es = new EventSource('/events' + location.search);
+es.onopen = () => { lv.dot.className = 'on'; }; es.onerror = () => { lv.dot.className = ''; };   // ?t=password when opened from the phone
 es.onmessage = m => {
   const e = JSON.parse(m.data);
   if (e.type === 'state') { const prev=st; st=e.state; st.recv=Date.now(); if(prev.mode==='pomo'&&st.mode==='pomo'&&prev.phase!==st.phase) beep(st.phase!=='focus'); render(); }
   else if (e.type === 'mouse') { tgt = { x: clamp((e.x-.5)*2,-1,1), y: clamp((e.y-.5)*2-.25,-1,1) }; }
   else if (e.type === 'idle') idleMs = e.ms;
-  else if (e.type === 'music') { const was = music.on; music = e; lyric = e.line || ''; if (!e.on || !was) lineTimes = []; render(); }
-  else if (e.type === 'lyric') { lyric = e.line; music.line = e.line; lyricAt = Date.now(); lyricGlanceUntil=performance.now()+850; lyricSide=-lyricSide; if (e.line) noteLine(performance.now()); render(); }
-  else if (e.type === 'audio_level') { audio.bass=clamp(Number(e.bass)||0,0,1); audio.mid=clamp(Number(e.mid)||0,0,1); audio.treble=clamp(Number(e.treble)||0,0,1); audio.beat=clamp(Number(e.beat)||0,0,1); if(audio.beat>.5) audio.beatAt=performance.now(); audio.stamp=performance.now(); }
+  else if (e.type === 'lyrics') lvApply(e);
+  else if (e.type === 'view') document.body.classList.toggle('lyrics-view', e.view === 'lyrics');
+  else if (e.type === 'music') { const was = music.on; music = e; lyric = e.line || ''; render(); }
+  else if (e.type === 'lyric') { lyric = e.line; music.line = e.line; lyricAt = Date.now(); render(); }
   else if (e.type === 'flash') { flash = { mood:e.mood, until: performance.now() + (e.ms || (e.mood==='panic'?3500:2500)) };
     if (e.text) { say = { text:e.text, until: Date.now() + (e.ms || 2500) }; render(); } }
   else if (e.type === 'typing') { kps = Number(e.kps) || 0; typingOn = !!e.on; }
@@ -181,8 +213,8 @@ function render() {
   document.body.classList.toggle('music-compact', music.on && !ambient);
   const el = (Date.now() - st.since) / 1000, T = $('#title'), S = $('#sub');
   if (st.mode === 'dsa') {
-    T.textContent = st.text || 'what are we solving today?';
-    S.textContent = el > 1500 ? `${fmt(el)}  stuck? write the brute force first` : fmt(el);
+    T.textContent = st.text || dsaPrompt();
+    const hint = dsaHint(el); S.textContent = hint ? `${fmt(el)}  ${hint}` : fmt(el);
   } else if (st.mode === 'coding') {
     T.textContent = 'nvim'; S.textContent = `in the editor for ${fmt(el)}`;
   } else if (st.mode === 'pomo') {
@@ -203,25 +235,6 @@ function render() {
 setInterval(render, 1000); render();
 
 // ---- eyes ----
-// ---- music mood: hype on loud/bass-heavy parts, chill on quiet ones, overjoyed flash on a sudden drop ----
-const mus = {quick:0, fast:0, slow:0, t:0, warm:0, lvl:'vibe', dropCool:0};
-function musicMood(now) {
-  const dt = Math.min(.25, Math.max(0, (now - mus.t)/1000)); mus.t = now;
-  if (now - audio.stamp > 700) { mus.warm = 0; mus.quick = mus.fast = mus.slow = 0; return mus.lvl = 'vibe'; }  // no live audio
-  const x = audio.bass*.55 + audio.mid*.3 + audio.treble*.15, a = tau => 1 - Math.exp(-dt/tau);
-  mus.quick += (x-mus.quick)*a(.25); mus.fast += (x-mus.fast)*a(1.5); mus.slow += (x-mus.slow)*a(8);
-  mus.warm += dt;
-  if (mus.warm < 4) mus.slow = mus.fast;                                            // baseline = how this song starts out
-  if (mus.warm < 4 || mus.slow < .05) return mus.lvl = 'vibe';                    // still learning this song / silence
-  if (mus.quick - mus.fast > .28 && now > mus.dropCool) {                          // sudden drop
-    mus.dropCool = now + 9000; flash = {mood:'overjoyed', until: now + 1100}; return 'overjoyed';
-  }
-  if (mus.lvl === 'hype')       { if (mus.fast < mus.slow*1.08 + .02) mus.lvl = 'vibe'; }
-  else if (mus.lvl === 'chill') { if (mus.fast > mus.slow*.85) mus.lvl = 'vibe'; }
-  else if (mus.fast > mus.slow*1.2 + .04) mus.lvl = 'hype';
-  else if (mus.fast < mus.slow*.7 - .02) mus.lvl = 'chill';
-  return mus.lvl;
-}
 function level(now) {
   // Lyrics view stays calm and takes priority over pokes, idle moods and flashes.
   if(poke.lv && now<poke.until) return poke.lv;
@@ -232,45 +245,109 @@ function level(now) {
   flash = null;
   if (st.mode === 'dsa' && Date.now() - st.since > 1500000) return 'worry';
   if (typingOn && st.mode !== 'pomo') return 'focus';          // typing: locked in, serious; back to normal when it stops
-  if (music.on) return musicMood(now);                 // nothing else going on: vibe to the music
   const i = idleNow() / 1000;
-  return i > 180 || energy<8 ? 'asleep' : i > 65 || energy<25 ? 'sleepy' : i > 18 || energy<55 ? 'bored' : 'alert';
+  const base = i > 180 || energy<8 ? 'asleep' : i > 65 || energy<25 ? 'sleepy' : i > 18 || energy<55 ? 'bored' : 'alert';
+  return (music.on && (base === 'alert' || base === 'bored')) ? 'vibe' : base;   // music is just part of idle: a calm, content look
 }
 // ---- idle acts: small things it does when nothing else is going on ----
-const ACTS = [['bee',.08],['double',.14],['squint',.10],['side',.12],['fly',.08],['clock',.12],['daydream',.10],['cross',.07],['wink',.10],['sneeze',.03],['thought',.10],['yawn',.04]];
-const ACT_MS = {bee:600, double:700, squint:1100, side:1100, fly:1100, clock:1500, daydream:2800, cross:1500, wink:550, sneeze:1500, thought:600, yawn:600};
-const THOUGHTS = ['hmm', '...', 'still here', 'what are we doing', 'water?', 'posture check', 'you good?'];
-// a bee flies a lazy looping path across the screen; the eyes follow it, cross-eyed when it buzzes past the face
-const BEE = { on:false, t0:0, dur:0, sx:0, ex:0, sy:0, ph:0, x:0, y:0, fading:0 };
-function beeStart(now) {
-  const W = innerWidth, r = $('#face').getBoundingClientRect(), fromLeft = Math.random() < .5;
-  Object.assign(BEE, { on:true, t0:now, dur:8500 + Math.random()*2500, sx: fromLeft ? -.08*W : 1.08*W, ex: fromLeft ? 1.08*W : -.08*W,
-                       sy: r.top + r.height*(.28 + Math.random()*.3), ph: Math.random()*6.28, fading:0 });
-  const p = beePos(0); BEE.x = p.x; BEE.y = p.y;
-  $('#bee').style.display = 'block'; $('#bee').style.opacity = 1;
-  say = { text:'bzzz', until: Date.now() + 2500 }; render();
+const ACTS = [['groove',.14],['fly',.12],['double',.14],['squint',.10],['side',.12],['clock',.12],['daydream',.10],['cross',.07],['wink',.10],['sneeze',.03],['thought',.10],['yawn',.04]];
+const ACT_MS = {groove:4500, double:700, squint:1100, side:1100, fly:600, clock:1500, daydream:2800, cross:1500, wink:550, sneeze:1500, thought:600, yawn:600};
+const LINES = {
+  poke2: ['hey', 'ow', 'hm?', 'rude', 'yes?', 'ouch', 'excuse me'],
+  poke3: ['...', 'stop poking', 'really?', 'i felt that', 'hey!', 'what.'],
+  poke4: ['stop.', 'seriously.', 'knock it off', 'i said stop', 'enough'],
+  poke6: ['i said stop.', 'last warning', 'i will bite', 'one more and i leave'],
+  poke8: ['not talking to you', '...', 'la la la', 'ignoring you', 'i am a statue'],
+  fly: ['bzzz', 'bzz', 'a fly?', 'shoo', 'zzzt', 'buzz buzz', 'a visitor'],
+  sneeze: ['achoo', 'ah-choo!', '*sneeze*', 'achoo! bless me', 'a-a-achoo'],
+  dsaStart: ['what are we solving today?', 'pick a problem. any problem.', 'easy, medium, or brave?', 'warm up with an easy one?',
+             "what's today's victim?", 'ready when you are', "let's find a pattern", 'one problem at a time'],
+  dsa1: ['take your time', 'have you drawn the example?', 'read the constraints again', 'what is the input size?'],
+  dsa2: ['what is the brute force?', 'try a smaller input', 'what would a hash map do here?', 'any edge cases yet?'],
+  dsa3: ['what is the invariant?', 'can sorting help?', 'two pointers? sliding window?', 'could it be a graph?'],
+  dsa4: ['stuck? write the brute force first', 'look at the constraints again', 'walk away for 2 minutes?', 'explain it out loud'],
+  dsa5: ['long one. peek at the hint?', 'time for a break?', 'sleep on it? sometimes works', 'water. then come back'],
+  thought: ['hmm', '...', 'still here', 'what are we doing', 'water?', 'posture check', 'you good?', 'thinking about nothing',
+            'snack time?', 'i like it here', 'tick tock', 'all quiet', 'just vibing', 'hello?', 'do i have hands?', 'a bit quiet in here',
+            'you ever just stare?', 'blink blink', 'what is that cursor doing'],
+  thoughtNight: ['still awake?', 'sleep is free', 'it is late', 'bed soon?', 'the bugs sleep too'],
+  thoughtCoding: ['nvim. nice', 'semicolons?', 'one more feature?', 'save often', 'hjkl hjkl', ':wq?'],
+  thoughtMusic: ['good song', 'this one slaps', 'nice tune', 'humming along', 'tap tap tap'],
+};
+const lastPick = {};
+function pickOf(arr, key) {
+  let c, n = 0;
+  do { c = arr[Math.floor(Math.random() * arr.length)]; } while (arr.length > 1 && c === lastPick[key] && ++n < 8);
+  return (lastPick[key] = c);
 }
-function beePos(u) {
-  const W = innerWidth, H = innerHeight, e = u*u*(3 - 2*u);                       // ease in/out across the screen
-  const loop = Math.sin(Math.PI*u) * .06 * W, a = u * 20 + BEE.ph;                // looping flight
-  return { x: BEE.sx + (BEE.ex - BEE.sx) * e + Math.cos(a) * loop,
-           y: BEE.sy + Math.sin(u*7 + BEE.ph) * .12*H + Math.sin(a) * loop * .8 };
+const L = k => pickOf(LINES[k], k);
+// dsa mode: the prompt is picked once per session (not every redraw), and a hint appears as the minutes pass
+const dsaCache = { since: null, prompt: '', stage: -1, hint: '' };
+function dsaPrompt() {
+  if (dsaCache.since !== st.since) { dsaCache.since = st.since; dsaCache.prompt = L('dsaStart'); dsaCache.stage = -1; dsaCache.hint = ''; }
+  return dsaCache.prompt;
 }
-// returns {x,y} of the bee (screen px) while it is flying, else null; hides it when done or when something real happens
-function beeStep(now, calm) {
-  if (!BEE.on) return null;
-  const el = $('#bee'), u = (now - BEE.t0) / BEE.dur;
-  if (!calm && !BEE.fading) BEE.fading = now;                                     // real reaction: bee leaves
-  const f = BEE.fading ? 1 - (now - BEE.fading) / 350 : 1;
-  if (u >= 1 || f <= 0) { BEE.on = false; el.style.display = 'none'; return null; }
-  const p = beePos(u), dir = p.x >= BEE.x ? 1 : -1;
-  BEE.x = p.x; BEE.y = p.y; el.style.opacity = f;
-  const w = el.offsetWidth || 40, h = el.offsetHeight || 28;
-  el.style.transform = `translate(${(p.x - w/2).toFixed(1)}px,${(p.y - h/2).toFixed(1)}px) scaleX(${dir})`;
-  return BEE.fading ? null : p;
+function dsaHint(el) {
+  dsaPrompt();
+  const stage = el >= 2400 ? 5 : el >= 1500 ? 4 : el >= 900 ? 3 : el >= 600 ? 2 : el >= 300 ? 1 : 0;      // 5, 10, 15, 25, 40 minutes
+  if (stage !== dsaCache.stage) { dsaCache.stage = stage; dsaCache.hint = stage ? L('dsa' + stage) : ''; }
+  return dsaCache.hint;
+}
+function thoughtLine() {                                  // a bit of context: time of day, what you're doing, music
+  const h = new Date().getHours(); let pool = LINES.thought.slice();
+  if (h >= 22 || h < 5) pool = pool.concat(LINES.thoughtNight, LINES.thoughtNight);
+  if (st.mode === 'coding') pool = pool.concat(LINES.thoughtCoding, LINES.thoughtCoding);
+  if (music.on) pool = pool.concat(LINES.thoughtMusic, LINES.thoughtMusic);
+  return pickOf(pool, 'thought');
+}
+// a fly buzzes around the screen: darting, hovering near the face, sometimes landing for a second; the eyes follow it
+const FLY = { on:false, t0:0, dur:0, x:0, y:0, vx:0, vy:0, tx:0, ty:0, mode:'fly', nextPick:0, restUntil:0, last:0, ang:0, fading:0, leaving:false };
+function flyStart(now) {
+  const W = innerWidth, H = innerHeight;
+  const edge = [[-.05*W, Math.random()*H], [1.05*W, Math.random()*H], [Math.random()*W, -.05*H], [Math.random()*W, 1.05*H]][Math.floor(Math.random()*4)];
+  Object.assign(FLY, { on:true, t0:now, dur:11000 + Math.random()*5000, x:edge[0], y:edge[1], vx:0, vy:0, mode:'fly', nextPick:0, restUntil:0, last:now, fading:0, leaving:false });
+  FLY.ang = Math.atan2(H/2 - FLY.y, W/2 - FLY.x); FLY.tx = FLY.x; FLY.ty = FLY.y;
+  const el = $('#fly'); el.style.display = 'block'; el.style.opacity = 1; el.classList.remove('rest');
+  say = { text:L('fly'), until: Date.now() + 2500 }; render();
+}
+function flyPick(now) {
+  const W = innerWidth, H = innerHeight, fr = $('#face').getBoundingClientRect(), fx = fr.left + fr.width/2, fy = fr.top + fr.height*.43;
+  if (FLY.leaving) { FLY.tx = FLY.x < W/2 ? -.25*W : 1.25*W; FLY.ty = FLY.y + (Math.random() - .5) * H * .4; return; }
+  if (Math.random() < .5) { FLY.tx = fx + (Math.random() - .5) * fr.width * .9; FLY.ty = fy + (Math.random() - .5) * fr.height * .8; }   // loiter around the face
+  else { FLY.tx = W * (.06 + Math.random() * .88); FLY.ty = H * (.08 + Math.random() * .84); }                                     // or dart somewhere on screen
+  if (now - FLY.t0 > 3000 && Math.random() < .2) { FLY.mode = 'land'; FLY.nextPick = Infinity; }
+  else FLY.nextPick = now + 300 + Math.random() * 800;
+}
+// returns {x,y} (screen px) while it flies, else null; hides it when done or when something real happens
+function flyStep(now, calm) {
+  if (!FLY.on) return null;
+  const el = $('#fly'), W = innerWidth, H = innerHeight, dt = Math.min(.05, (now - FLY.last) / 1000);
+  FLY.last = now;
+  if (!calm && !FLY.fading) FLY.fading = now;                                       // real reaction: the fly leaves
+  const f = FLY.fading ? 1 - (now - FLY.fading) / 350 : 1;
+  if (f <= 0) { FLY.on = false; el.style.display = 'none'; return null; }
+  if (!FLY.leaving && now - FLY.t0 > FLY.dur) { FLY.leaving = true; FLY.mode = 'fly'; FLY.nextPick = Infinity; flyPick(now); }
+  if (FLY.mode === 'rest') {
+    if (now >= FLY.restUntil) { FLY.mode = 'fly'; FLY.vx = (Math.random() - .5) * W * .8; FLY.vy = -Math.random() * H * .5; flyPick(now); }   // takes off
+  } else {
+    if (FLY.mode === 'fly' && now >= FLY.nextPick) flyPick(now);
+    const k = FLY.leaving ? 12 : 55, c = FLY.leaving ? 3 : 9;                       // spring toward the target = darty, slight overshoot
+    FLY.vx += (k * (FLY.tx - FLY.x) - c * FLY.vx) * dt; FLY.vy += (k * (FLY.ty - FLY.y) - c * FLY.vy) * dt;
+    const sp = Math.hypot(FLY.vx, FLY.vy), max = W * 1.3; if (sp > max) { FLY.vx *= max / sp; FLY.vy *= max / sp; }
+    FLY.x += FLY.vx * dt + Math.sin(now / 23 + FLY.t0) * .8; FLY.y += FLY.vy * dt + Math.cos(now / 19) * .8;   // buzzing jitter
+    if (FLY.mode === 'land' && Math.hypot(FLY.tx - FLY.x, FLY.ty - FLY.y) < 12 && sp < W * .15) {
+      FLY.mode = 'rest'; FLY.vx = FLY.vy = 0; FLY.x = FLY.tx; FLY.y = FLY.ty; FLY.restUntil = now + 1100 + Math.random() * 1000;
+    }
+    if (FLY.leaving && (FLY.x < -.1*W || FLY.x > 1.1*W || FLY.y < -.15*H || FLY.y > 1.15*H)) { FLY.on = false; el.style.display = 'none'; return null; }
+  }
+  if (Math.hypot(FLY.vx, FLY.vy) > 80) { let d = Math.atan2(FLY.vy, FLY.vx) - FLY.ang; d = Math.atan2(Math.sin(d), Math.cos(d)); FLY.ang += d * .25; }
+  const w = el.offsetWidth || 34, h = el.offsetHeight || 24;
+  el.style.opacity = f; el.classList.toggle('rest', FLY.mode === 'rest');
+  el.style.transform = `translate(${(FLY.x - w/2).toFixed(1)}px,${(FLY.y - h/2).toFixed(1)}px) rotate(${FLY.ang.toFixed(2)}rad)`;
+  return FLY.fading ? null : { x: FLY.x, y: FLY.y };
 }
 function pickAct(lv) {
-  const pool = ACTS.filter(([n]) => (n !== 'yawn' || lv === 'bored') && (n !== 'bee' || !BEE.on));
+  const pool = ACTS.filter(([n]) => (n !== 'yawn' || lv === 'bored') && (n !== 'fly' || !FLY.on) && (n !== 'groove' || music.on));
   let r = Math.random() * pool.reduce((s, a) => s + a[1], 0);
   for (const [n, w] of pool) if ((r -= w) <= 0) return n;
   return 'double';
@@ -286,14 +363,6 @@ function frame(now) {
   if(lv==='annoyed'){lidT=.38;pr=32;shake=1.2;}
   if(lv==='angry'){lidT=.5;pr=22;shake=2.5;gaze={x:0,y:-.1};}
   if(lv==='ignore') lidT=1;
-  const audioFresh = music.on && now-audio.stamp<700;
-  const bassPulse = audioFresh ? audio.bass : 0;
-  const treblePulse = audioFresh ? audio.treble : 0;
-  const beatPop = audioFresh ? Math.max(0, 1 - (now - audio.beatAt) / 220) : 0;
-  // Brief downward glance whenever a new lyric line arrives; alternate sides slightly.
-  const pk = !(lv==='vibe' || lv==='hype' || lv==='chill' || lv==='overjoyed');   // only music moods follow the lyrics
-  if (music.on && !pk && now<lyricGlanceUntil) gaze={x:lyricSide*.16,y:.62};
-  else if(music.on && !pk && audioFresh) gaze={x:Math.sin(now/520)*(.12+audio.mid*.12),y:-.04+Math.sin(now/190)*bassPulse*.10};
   if (lv === 'bored' || lv === 'sleepy') {
     if (now > wander.next) { wander = { x: Math.random()*1.6-.8, y: Math.random()*1.2-.7, next: now + 1200 + Math.random()*3000 }; }
     gaze = wander;
@@ -304,7 +373,6 @@ function frame(now) {
   }
   if (lv === 'asleep') lidT = 1;
   if (lv==='sleepy' && Math.random()<0.0008) { flash={mood:'yawn',until:now+900}; }
-  if (music.on && audioFresh) { pr += bassPulse*6 + beatPop*5; lidT=Math.max(lidT,treblePulse*.16); }
   if (lv==='happy'||lv==='overjoyed') botT=.38;
   if (lv==='win') {pr=24; shake=1.2;}
   if (lv==='flinch'||lv==='annoyed') {pr=27; shake=2.5;}
@@ -313,14 +381,14 @@ function frame(now) {
   if (new Date().getHours()>=2 && new Date().getHours()<6 && lv!=='asleep') { lidT=Math.max(lidT,.42); }
   // idle acts only run while it is calm (idle / bored / vibing); any real reaction wins
   const calm = lv==='alert' || lv==='bored' || lv==='vibe' || lv==='chill';
-  let winkAmt = 0, cross = 0, mouthOverride = null;
+  let winkAmt = 0, cross = 0, mouthOverride = null, swayX = 0, swayY = 0;
   if (now > micro.next) {
-    if (calm && now >= notifyUntil && !BEE.on) {
+    if (calm && now >= notifyUntil && !FLY.on) {
       micro.type = pickAct(lv); micro.start = now; micro.until = now + ACT_MS[micro.type]; micro.d2 = micro.said = false;
       if (micro.type === 'double') blinkStart = now;
-      if (micro.type === 'bee') beeStart(now);
+      if (micro.type === 'fly') flyStart(now);
       if (micro.type === 'yawn') flash = { mood:'yawn', until: now + 1800 };
-      if (micro.type === 'thought') { say = { text: THOUGHTS[Math.floor(Math.random()*THOUGHTS.length)], until: Date.now() + 3200 }; render(); }
+      if (micro.type === 'thought') { say = { text: thoughtLine(), until: Date.now() + 3200 }; render(); }
       micro.next = now + 7000 + Math.random()*13000;
     } else micro.next = now + 3000;
   }
@@ -328,8 +396,11 @@ function frame(now) {
     const u = (now - micro.start) / (micro.until - micro.start);
     switch (micro.type) {
       case 'squint': lidT = Math.max(lidT,.55); break;
+      case 'groove': {                                                                    // slow sway, eyes half closed, little smile
+        const s = Math.sin(u * Math.PI);                                                  // eases in and out over ~4.5 s
+        lidT = Math.max(lidT, .3 * s); swayX = Math.sin(now / 600) * 10 * s; swayY = -Math.abs(Math.sin(now / 600)) * 4 * s;
+        mouthOverride = 'M226 268 Q250 284 274 268'; break; }
       case 'side': gaze = {x:.85,y:0}; break;
-      case 'fly': gaze = {x:Math.sin(now/90)*.85,y:Math.cos(now/130)*.5}; break;
       case 'double': if (u > .45 && !micro.d2) { blinkStart = now; micro.d2 = true; } break;
       case 'clock': gaze = {x:0,y:.95}; break;                                            // glance down at the time
       case 'daydream': gaze = {x:-.55+Math.sin(now/700)*.2,y:-.7}; mouthOverride='M228 268 Q250 280 272 268'; break;
@@ -338,25 +409,23 @@ function frame(now) {
       case 'sneeze':
         if (u < .6) { gaze = {x:0,y:-.85}; startle = Math.max(startle, .3); }             // "ah... ah..."
         else { lidT = 1; shake = 5; mouthOverride='M230 250 Q250 296 270 250';              // "ACHOO"
-               if (!micro.said) { micro.said = true; say = { text:'achoo', until: Date.now()+1500 }; render(); } }
+               if (!micro.said) { micro.said = true; say = { text:L('sneeze'), until: Date.now()+1600 }; render(); } }
         break;
     }
   }
   {
-    const bp = beeStep(now, calm);
-    if (bp) {                                                                     // follow the bee with the pupils
+    const bp = flyStep(now, calm);
+    if (bp) {                                                                     // follow the fly with the pupils
       const fr = $('#face').getBoundingClientRect(), fx = fr.left + fr.width/2, fy = fr.top + fr.height*.43, d = Math.hypot(bp.x - fx, bp.y - fy);
       gaze = { x: clamp((bp.x - fx) / (.32*innerWidth), -1, 1), y: clamp((bp.y - fy) / (.3*innerHeight), -1, 1) };
       cross = Math.max(cross, clamp(1 - d / (.17*innerWidth), 0, 1));              // buzzing right past its nose
     }
   }
+  { const tf = (swayX || swayY) ? `translate(${swayX.toFixed(1)}px,${swayY.toFixed(1)}px)` : ''; if ($('#face').style.transform !== tf) $('#face').style.transform = tf; }
   if (lv === 'happy') { botT = .38; }
   if (lv === 'worry') { pr = 26; shake = 1.5; }
   if (lv === 'panic') { pr = 18; shake = 5; }
   $('#z').classList.toggle('on', lv === 'asleep');
-  $('#face').classList.toggle('sway', music.on && !pk);
-  $('#face').classList.toggle('audio-live', music.on && audioFresh);
-  $('#face').style.animationDuration = `${(3.2-bassPulse*1.1).toFixed(2)}s`;
   const MOUTH={win:'M222 272 Q256 288 290 258',happy:'M215 268 Q250 292 285 268',overjoyed:'M210 262 Q250 298 290 262',vibe:'M228 268 Q250 280 272 268',strain:'M222 278 Q236 268 250 278 T278 278',judge:'M228 278 L272 278',hype:'M212 264 Q250 296 288 264',chill:'M232 270 Q250 275 268 270',yawn:'M230 250 Q250 296 270 250',worry:'M222 278 Q236 268 250 278 T278 278',angry:'M222 284 Q250 264 278 284',annoyed:'M228 278 Q250 270 272 278',panic:'M236 262 Q250 294 264 262 Q250 254 236 262Z',flinch:'M226 280 Q238 270 250 280 T274 280'};
   const mouth=$('#mouth'), md=mouthOverride||MOUTH[lv]; mouth.style.opacity=md?1:0; if(md) mouth.setAttribute('d',md);
 
@@ -404,7 +473,7 @@ function frame(now) {
     gEl.querySelector('.lb').setAttribute('d', `M${a0},262 L${a0},${y0} Q${(a0+b0)/2},${yq} ${b0},${y0} L${b0},262Z`);
   }
   // eyebrows: lift/tilt with mood, sink with the lids, jump when startled
-  const by = Math.max(-36, -12 - ex.brow - grooveLift(now, lv) + lidPx*.18 - startle*14), yi = Math.max(-38, by + ex.bt*20), yo = Math.max(-38, by - ex.bt*10);
+  const by = Math.max(-36, -12 - ex.brow + lidPx*.18 - startle*14), yi = Math.max(-38, by + ex.bt*20), yo = Math.max(-38, by - ex.bt*10);
   const bL=$('#bL'), bR=$('#bR');
   bL.setAttribute('y1',yo+sy); bL.setAttribute('y2',yi+sy); bR.setAttribute('y1',yi+sy); bR.setAttribute('y2',yo+sy);
   requestAnimationFrame(frame);

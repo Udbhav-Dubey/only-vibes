@@ -1,0 +1,4 @@
+,Ann. return %,Ann. vol %,Sharpe,Sortino,Max drawdown %,Entries,Turnover,Total cost %
+Baseline (hard z-score),2.257,3.375,0.669,1.036,-6.653,216.0,431.0,5.388
+Model A: MLP filter,0.105,0.589,0.179,0.107,-1.317,7.0,14.0,0.175
+Model B: Fuzzy sizing,0.388,2.225,0.174,0.272,-5.334,835.0,1071.018,13.393

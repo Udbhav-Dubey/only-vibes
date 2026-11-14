@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """desk-buddy server (stdlib only). Hooks POST /event, the phone listens on /events (SSE)."""
-import bisect, glob, hmac, json, os, queue, re, secrets, select, shlex, shutil, signal, socket, struct, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
+import bisect, glob, hmac, json, os, queue, random, re, secrets, select, shlex, shutil, signal, socket, struct, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -49,6 +49,9 @@ typing_force = 0.0                    # `buddy typing` holds the locked-in look 
 keys = deque(maxlen=300)              # key-press TIMESTAMPS only (never which key), for typing speed
 fail_streak = 0
 music = {"on": False, "name": "", "line": "", "status": ""}   # lyrics layer: independent of the mode
+view = "face"                          # what the phone shows: "face" (Buddy) or "lyrics" (spectrum.py's lyrics page)
+ACCENT = os.environ.get("BUDDY_ACCENT", "#ff2bd6")
+lyrics_payload = {"accent": ACCENT, "title": "", "song": "", "msg": "waiting for music…", "lines": [], "cur": 0}
 SIT_MIN = float(os.environ.get("BUDDY_SIT_MIN", "90"))   # minutes of continuous activity before a stretch nudge
 
 
@@ -74,8 +77,13 @@ def set_mode(mode, text="", **extra):
 
 
 def handle(ev):
-    global last_lyric, pomo, typing_force, site_dsa
+    global last_lyric, pomo, typing_force, site_dsa, view
     t = ev.get("type")
+    if t == "view":                    # `buddy lyrics` / `buddy face`
+        v = str(ev.get("view", "toggle"))
+        view = ("lyrics" if view == "face" else "face") if v == "toggle" else ("lyrics" if v == "lyrics" else "face")
+        send({"type": "view", "view": view})
+        return
     if t == "site":
         return on_site(ev)
     if t == "judge":
@@ -101,15 +109,15 @@ def handle(ev):
         set_mode("dsa", ev.get("text") or "today's problem")
     elif t == "dsa_solved":
         record_dsa(ev.get("text") or state.get("text") or "Solved")
-        send({"type": "flash", "mood": "overjoyed"})
+        react("overjoyed", phrase("solved"), 3.5)
     elif t == "build_pass":
         send({"type": "flash", "mood": "overjoyed" if int(ev.get("streak", 0)) >= 3 else "happy"})
     elif t == "build_failed":
         send({"type": "flash", "mood": "worry" if int(ev.get("streak", 1)) >= 3 else "flinch"}) 
     elif t == "git_commit":
-        send({"type": "flash", "mood": "happy", "text": "nice"})
+        react("happy", phrase("commit"), 2.5)
     elif t == "git_force_push":
-        send({"type": "flash", "mood": "panic"})
+        react("panic", phrase("force_push"), 3.5)
     elif t == "terminal_error":
         send({"type": "flash", "mood": "flinch"})
     elif t in ("pomodoro_focus", "pomodoro_break", "cpu", "battery", "network", "typing"):
@@ -429,16 +437,19 @@ class Lyrics:
 
 
 greeted, away, away_since = False, False, 0.0
+commit_day = ["", 0]                       # [date, commits seen today]
 site_seen, site_dsa, judge_wrongs = 0.0, False, {}
 SITE_HELLO = {"leetcode": "leetcode. let's see.", "codeforces": "codeforces. stay calm."}
 
 
 def greeting_text(hour, away_s=0.0, start=False):
     if 5 <= hour < 12 and (start or away_s >= 2 * 3600):
-        return "good morning"
+        return phrase("greet_morning")
     if hour >= 22 or hour < 5:
-        return "up late?"
-    return "hi" if start else "welcome back"
+        return phrase("greet_late")
+    if start:
+        return phrase("greet_evening") if hour >= 17 else phrase("greet_start")
+    return phrase("greet_back_long") if away_s >= 2 * 3600 else phrase("greet_back")
 
 
 def greet(start=False, away_s=0.0):
@@ -466,7 +477,7 @@ def on_site(ev):
         return
     site_seen = time.time()
     if site in SITE_HELLO and ready("site_" + site, 4 * 3600):
-        react("focus", SITE_HELLO[site], 3.5)
+        react("focus", phrase("hello_" + site), 3.5)
     if pomo is None and state["mode"] in ("idle", "coding"):
         site_dsa = True
         set_mode("dsa", title or site)                       # problem name + a timer, like `buddy dsa`
@@ -479,16 +490,16 @@ def on_judge(ev):
     verdict = str(ev.get("verdict", ""))
     title = str(ev.get("title") or (state.get("text") if site_dsa else "") or "")[:80]
     if verdict == "accepted":
-        judge_wrongs.pop(title, None)
+        misses = judge_wrongs.pop(title, 0)
         if title and title not in SITE_HELLO and ready("solved_" + title, 1800):
             record_dsa(title)                                # counts toward the streak
-        react("overjoyed", "accepted!", 4)
+        text = phrase("accepted_after", n=misses + 1) if misses >= 2 else phrase("accepted")
+        react(pick("overjoyed", "overjoyed", "win"), text, 4)
     elif verdict in ("wrong", "tle", "mle", "error", "ce"):
         n = judge_wrongs[title] = judge_wrongs.get(title, 0) + 1
-        text = {"wrong": "wrong answer", "tle": "time limit...", "mle": "memory limit",
-                "error": "runtime error", "ce": "compile error"}[verdict]
+        text = phrase("judge_" + verdict)
         if n >= 3:
-            react("worry", text + ". breathe.", 4)
+            react("worry", phrase("judge_many", text=text, n=n), 4.5)
         else:
             react("flinch", text, 3)
 
@@ -658,6 +669,26 @@ def tick_loop():
 
 
 
+def build_lyrics_payload(np_state, lyr):
+    """What spectrum.py's phone page shows: title, 5 lines around the current one (or a status message)."""
+    avail, artist, title, album, length, pos, playing, _est = np_state
+    d = {"accent": ACCENT, "title": "", "song": "", "msg": "", "lines": [], "cur": 0}
+    if not (avail and title):
+        d["msg"] = "start some music…"
+        return d
+    d["title"] = (f"{clean_artist(artist)} — {title}" if artist else title) + ("" if playing else "  ⏸")
+    d["song"] = f"{artist}|{title}"
+    lyr.update(artist, title, album, length)
+    status, cur, win = lyr.window_ids(pos + lyric_offset, 2, 2)
+    if status == "synced":
+        d["cur"] = cur
+        d["lines"] = [{"id": i, "text": t} for i, t in win]
+    else:
+        d["msg"] = {"loading": "fetching lyrics…", "none": "no lyrics found", "error": "couldn't reach lyrics service",
+                    "instrumental": "♪ instrumental ♪", "plain": "lyrics available but not time-synced"}.get(status, "")
+    return d
+
+
 def music_loop():
     """Now-playing + synced lyrics -> the `music` layer.
 
@@ -671,8 +702,14 @@ def music_loop():
     lyr = Lyrics()
     np.start()
     active_line, quiet_since = None, None
+    global lyrics_payload
     while True:
-        avail, artist, title, album, length, pos, playing, estimated = np.state()
+        st_now = np.state()
+        avail, artist, title, album, length, pos, playing, estimated = st_now
+        payload = build_lyrics_payload(st_now, lyr)
+        if payload != lyrics_payload:                              # lines / title / pause state changed
+            lyrics_payload = payload
+            send({"type": "lyrics", **payload})
         if avail and title and playing:
             quiet_since = None
             name = f"{clean_artist(artist)} — {title}" if artist else title
@@ -706,6 +743,70 @@ def ready(name, secs):
         return False
     cooldowns[name] = now
     return True
+
+
+# ---- things it can say: several versions of each, never the same one twice in a row ----
+PHRASES = {
+    "commit_first": ["first commit of the day", "and so it begins", "day's first. nice", "off the mark", "one down, many to go"],
+    "commit": ["nice", "committed", "ship it", "clean", "that's in", "saved for posterity", "look at you", "another one", "tidy"],
+    "commit_many": ["{n} commits today", "commit machine", "{n} today. productive", "you're on a roll", "{n}. keep going"],
+    "push_ok": ["pushed", "it's out there now", "shipped", "pushed. no take-backs", "gone to the remote", "up it goes"],
+    "push_rejected": ["rejected", "remote said no", "pull first?", "non-fast-forward?", "not today", "the remote disagrees"],
+    "force_push": ["force push?!", "you sure about that?", "brave.", "i'm not looking", "rewriting history...", "...okay then", "bold move"],
+    "reset_hard": ["...gone.", "poof", "rip your changes", "hard reset. bold", "they were never there", "no going back"],
+    "conflict": ["conflict?", "oh no. merge conflict", "markers everywhere", "one hunk at a time", "breathe. resolve one by one"],
+    "build_pass": ["passed", "green", "clean build", "it works?!", "compiles", "no errors. suspicious", "built", "smooth"],
+    "build_pass_fixed": ["fixed", "that did it", "back to green", "better", "there we go", "now it works"],
+    "build_pass_late": ["finally.", "there it is", "about time", "took {n} tries", "relief", "see? you got it", "attempt {n}. worth it"],
+    "build_fail_1": ["failed", "build broke", "oof", "red", "that didn't work", "nope", "hm. error"],
+    "build_fail_2": ["again", "still broken", "hm. again", "second one", "not yet"],
+    "build_fail_3": ["again?", "third time", "something's off", "check the first error", "the first error is the real one"],
+    "build_fail_5": ["{n} in a row. breathe", "read the first error", "step away for a sec?", "{n}. you got this", "rubber duck time?", "water break?"],
+    "typo": ["typo?", "that's not a command", "fat fingers", "did you mean something else?", "command not found", "hm?"],
+    "exit_code": ["exit {code}", "that returned {code}", "non-zero. noted", "exit {code}. hm", "something failed ({code})"],
+    "done": ["done", "finished", "that took a while", "all done", "back to you"],
+    "locked_in": ["locked in are we?", "locked in are we?", "locked in are we?", "locked in. i see you", "in the zone?", "fingers on fire", "keyboard goes brrr", "don't mind me"],
+    "hello_leetcode": ["leetcode. let's see.", "leetcode time", "ah, leetcode. be gentle", "one problem at a time", "let's cook"],
+    "hello_codeforces": ["codeforces. stay calm.", "codeforces. rating on the line?", "read the whole statement first", "time to think fast", "div 2 vibes"],
+    "accepted": ["accepted!", "ACCEPTED", "that's a solve", "clean solve", "nice one", "green across the board", "yes!!", "another one down"],
+    "accepted_after": ["{n} tries. worth it", "finally. attempt {n}", "got it on try {n}", "persistence. attempt {n}"],
+    "judge_wrong": ["wrong answer", "wrong answer. edge case?", "hm. wrong", "test it by hand", "WA"],
+    "judge_tle": ["time limit...", "too slow", "tle. think complexity", "needs a better approach", "can it be O(n log n)?"],
+    "judge_mle": ["memory limit", "too much memory", "memory. hm"],
+    "judge_error": ["runtime error", "crashed", "index out of range?", "null somewhere?"],
+    "judge_ce": ["compile error", "syntax slip", "doesn't compile"],
+    "judge_many": ["{text}. breathe", "{text}. again?", "{n} misses. rethink it?", "{text}. walk away for 2 minutes?", "{text}. read the statement again"],
+    "solved": ["solved!", "another one in the bank", "streak lives", "nice solve", "got it"],
+    "greet_morning": ["good morning", "morning!", "morning. coffee?", "rise and grind", "new day, new bugs"],
+    "greet_start": ["hi", "hey", "hello there", "hi, i'm awake", "oh. hi"],
+    "greet_evening": ["good evening", "evening", "hey. evening session?"],
+    "greet_late": ["up late?", "still up?", "it's late. hi", "night owl mode"],
+    "greet_back": ["welcome back", "you're back", "there you are", "back already?", "missed you"],
+    "greet_back_long": ["long break. welcome back", "where did you go?", "been a while", "i was getting lonely", "you live!"],
+    "sit": ["{m} min straight. stand up", "{m} minutes. stretch?", "you've been here {m} minutes", "posture check. {m} min", "go drink some water", "legs exist. use them", "eyes off the screen for a bit"],
+    "late": ["go to bed", "it's {t}. sleep?", "bed. now.", "the bugs will still be there tomorrow", "{t}. really?", "sleep helps debugging", "one more hour? no."],
+    "bye": ["bye", "see you", "later", "goodnight", "going to sleep", "bye bye"],
+    "cpu_runaway": ["something is eating the cpu", "who's burning the cpu?", "fans incoming", "the cpu is crying", "a process went feral"],
+    "cpu_hot": ["cpu {cpu}%", "cpu {cpu}%. toasty", "working hard in there ({cpu}%)", "{cpu}%. spinning up", "it's warm in here"],
+    "bat_critical": ["battery {cap}%!", "{cap}%! charger!", "{cap}% left. plug in", "about to die ({cap}%)"],
+    "bat_low": ["battery {cap}%", "battery's getting low ({cap}%)", "{cap}%. charger nearby?", "running low: {cap}%"],
+    "plugged": ["plugged in", "ahh, power", "charging", "thanks for the juice"],
+    "online": ["back online", "internet's back", "we have wifi again", "reconnected"],
+    "offline": ["offline", "wifi gone?", "no internet", "network dropped"],
+}
+_last_phrase = {}
+
+
+def phrase(key, **kw):
+    """A random line for `key`, never the same one twice in a row, with {n}/{m}/{code}... filled in."""
+    opts = PHRASES[key]
+    pool = [o for o in opts if o != _last_phrase.get(key)] or opts
+    choice = _last_phrase[key] = random.choice(pool)
+    return choice.format(**kw) if kw else choice
+
+
+def pick(*opts):
+    return random.choice(opts)
 
 
 def react(mood, text="", secs=3.0):
@@ -762,17 +863,23 @@ def on_cmd(ev):
             i += 2 if rest[i] in ("-C", "-c") else 1
         sub_cmd, args = (rest[i], rest[i + 1:]) if i < len(rest) else ("", [])
         if sub_cmd == "commit" and code == 0 and "--dry-run" not in args:
-            return react("happy", "nice", 2)
+            today = time.strftime("%Y-%m-%d")
+            if commit_day[0] != today:
+                commit_day[:] = [today, 0]
+            commit_day[1] += 1
+            n = commit_day[1]
+            text = phrase("commit_first") if n == 1 else phrase("commit_many", n=n) if n % 5 == 0 else phrase("commit")
+            return react(pick("happy", "happy", "win"), text, 2.5)
         if sub_cmd == "push":
             force = any(a.startswith("--force") or a.startswith("+") or
                         (a.startswith("-") and not a.startswith("--") and "f" in a) for a in args)
             if force:                                         # the shell sees the literal flag; git hooks can't
-                return react("panic", "force push?!", 3.5)
-            return react("happy", "pushed", 2) if code == 0 else react("flinch", "rejected", 2.5)
+                return react("panic", phrase("force_push"), 3.5)
+            return react("happy", phrase("push_ok"), 2) if code == 0 else react("flinch", phrase("push_rejected"), 2.5)
         if sub_cmd == "reset" and "--hard" in args:
-            return react("flinch", "...gone.", 2.5)
+            return react("flinch", phrase("reset_hard"), 2.5)
         if sub_cmd in ("merge", "rebase", "cherry-pick") and code != 0:
-            return react("worry", "conflict?", 3)
+            return react("worry", phrase("conflict"), 3)
     is_build = prog in BUILD_BIN
     if not is_build and prog in ("python", "python3"):
         is_build = rest[:2] in (["-m", "pytest"], ["-m", "unittest"])
@@ -782,17 +889,19 @@ def on_cmd(ev):
     if is_build:
         if code == 0:
             prev, fail_streak = fail_streak, 0
-            react("overjoyed" if prev >= 3 else "happy", "finally." if prev >= 3 else "passed", 2.5)
+            key = "build_pass_late" if prev >= 3 else "build_pass_fixed" if prev >= 1 else "build_pass"
+            react("overjoyed" if prev >= 3 else pick("happy", "happy", "win"), phrase(key, n=prev + 1), 2.5)
         else:
             fail_streak += 1
-            react("worry" if fail_streak >= 3 else "flinch", "again?" if fail_streak >= 3 else "failed", 2.5)
+            key = "build_fail_1" if fail_streak == 1 else "build_fail_2" if fail_streak == 2 else "build_fail_3" if fail_streak < 5 else "build_fail_5"
+            react("worry" if fail_streak >= 3 else "flinch", phrase(key, n=fail_streak), 2.5 if fail_streak < 5 else 4)
     elif code == 127:
-        react("flinch", "typo?", 2.5)
+        react("flinch", phrase("typo"), 2.5)
     elif code != 0:
         if prog not in SKIP_ERR and ready("term_err", 3):
-            react("flinch", f"exit {code}", 2.2)
+            react("flinch", phrase("exit_code", code=code), 2.2)
     elif secs >= 30:
-        react("happy", "done", 2.5)
+        react("happy", phrase("done"), 2.5)
 
 
 _prev_cpu = None
@@ -854,79 +963,7 @@ def typing_loop():
             send({"type": "typing", "on": on, "kps": round(recent / 5.0, 1)})
         # typing HARD (20+ presses in 5 s, ~4/s): say it once, then stay quiet for 10 minutes
         if on and recent >= 20 and pomo is None and ready("locked_in", 600):
-            react("focus", "locked in are we?", 3.5)
-
-
-class BeatTracker:
-    """Bass onset detector: positive spectral flux vs. an adaptive threshold, with a refractory gap."""
-    def __init__(self):
-        self.prev, self.avg, self.last = 0.0, 0.0, 0.0
-        self.hist = deque(maxlen=60)
-
-    def update(self, e, now):
-        flux, self.prev = max(0.0, e - self.prev), e
-        self.avg += (e - self.avg) * 0.02
-        self.hist.append(flux)
-        if len(self.hist) < 15 or self.avg < 1e-4:                 # warming up / silence
-            return False
-        mean = sum(self.hist) / len(self.hist)
-        sd = (sum((x - mean) ** 2 for x in self.hist) / len(self.hist)) ** 0.5
-        if flux > mean + 1.6 * sd + 0.06 * self.avg and now - self.last > 0.22:
-            self.last = now
-            return True
-        return False
-
-
-def audio_loop():
-    """Live audio -> bass/mid/treble levels + beat onsets (`audio_level` events), straight from
-    PulseAudio/PipeWire. Replaces running `spectrum.py --buddy`. Only captures while music plays."""
-    try:
-        import numpy as np
-    except ImportError:
-        print("numpy not installed: no beat reactions (sudo pacman -S python-numpy)")
-        return
-    if shutil.which("parec") is None:
-        print("parec not found: no beat reactions (sudo pacman -S libpulse)")
-        return
-    RATE, N = 44100, 4096
-    HOP = RATE // 60
-    source = os.environ.get("BUDDY_AUDIO_SOURCE", "@DEFAULT_MONITOR@")
-    window = np.hanning(N).astype(np.float32)
-    norm = N / 4.0
-    freqs = np.fft.rfftfreq(N, 1.0 / RATE)
-    bass_m, mid_m, tre_m = (freqs >= 35) & (freqs < 180), (freqs >= 180) & (freqs < 2500), (freqs >= 2500) & (freqs < 9000)
-    proc, buf, tracker, frame = None, np.zeros(N, np.float32), BeatTracker(), 0
-    while True:
-        if not music["on"]:
-            if proc:
-                proc.terminate()
-                proc = None
-            time.sleep(0.5)
-            continue
-        if proc is None:
-            proc = subprocess.Popen(["parec", "-d", source, "--format=s16le", f"--rate={RATE}",
-                                     "--channels=2", "--latency-msec=20"],
-                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            buf[:] = 0
-            tracker = BeatTracker()
-        data = proc.stdout.read(HOP * 4)
-        if not data:                                             # parec died (no such source, etc.)
-            proc = None
-            time.sleep(2)
-            continue
-        x = np.frombuffer(data[: len(data) // 4 * 4], dtype=np.int16).reshape(-1, 2)
-        mono = x.astype(np.float32).mean(axis=1)[-N:] / 32768.0
-        buf = np.concatenate((buf[len(mono):], mono))
-        frame += 1
-        if frame % 2:                                            # ~30 analyses per second
-            continue
-        spec = np.abs(np.fft.rfft(buf * window)) / norm
-        bass = float(np.clip(spec[bass_m].max() * 16.0, 0.0, 1.0))
-        mid = float(np.clip(spec[mid_m].max() * 12.0, 0.0, 1.0))
-        treble = float(np.clip(spec[tre_m].max() * 10.0, 0.0, 1.0))
-        beat = tracker.update(float(np.sqrt((spec[bass_m] ** 2).sum())), time.time())
-        send({"type": "audio_level", "bass": round(bass, 3), "mid": round(mid, 3),
-              "treble": round(treble, 3), "beat": 1.0 if beat else 0.0})
+            react("focus", phrase("locked_in"), 3.5)
 
 
 def watch_loop():
@@ -946,40 +983,40 @@ def watch_loop():
         hi = hi + 1 if cpu >= 90 else 0
         runaway = runaway + 1 if cpu >= 97 else 0
         if runaway >= 25 and ready("runaway", 120):
-            react("panic", "something is eating the cpu", 5)
+            react("panic", phrase("cpu_runaway"), 5)
         elif hi >= 6 and ready("cpu", 60):
-            react("strain", f"cpu {cpu}%", 6)
+            react("strain", phrase("cpu_hot", cpu=cpu), 6)
         # battery: low warning, plug-in cheer
         cap, status = read_battery()
         if cap is not None:
             if status != "Discharging" or cap > 25:
                 bat_warned = False
             if status == "Discharging" and cap <= 10 and ready("bat10", 120):
-                react("panic", f"battery {cap}%!", 5)
+                react("panic", phrase("bat_critical", cap=cap), 5)
             elif status == "Discharging" and cap <= 20 and not bat_warned:
                 bat_warned = True
-                react("worry", f"battery {cap}%", 5)
+                react("worry", phrase("bat_low", cap=cap), 5)
             if prev_status == "Discharging" and status in ("Charging", "Full", "Not charging"):
-                react("happy", "plugged in", 2.5)
+                react("happy", phrase("plugged"), 2.5)
             prev_status = status
         # network: needs 3 identical readings in a row so a blip doesn't count
         up = net_up()
         net_votes = net_votes + 1 if up != net_state else 0
         if net_votes >= 3:
             net_state, net_votes = up, 0
-            react("happy" if up else "worry", "back online" if up else "offline", 3)
+            react("happy" if up else "worry", phrase("online" if up else "offline"), 3)
         if n % 2 == 0:
             send({"type": "sys", "cpu": cpu, "battery": cap, "online": net_state})
         # late night + sitting too long (only while you're actually at the machine)
         active = now - last_move < 60
         if 1 <= time.localtime().tm_hour < 5 and active and ready("late", 2700):
-            react("judge", "go to bed", 6)
+            react("judge", phrase("late", t=time.strftime("%H:%M")), 6)
         if now - last_move < 120:
             sit_since = sit_since or now
         elif now - last_move > 300:
             sit_since = None
         if sit_since and now - sit_since > SIT_MIN * 60 and ready("sit", 2400):
-            react("yawn", "stand up for a minute", 6)
+            react("yawn", phrase("sit", m=int((now - sit_since) / 60)), 6)
 
 
 def notify_loop():
@@ -1025,6 +1062,8 @@ class H(BaseHTTPRequestHandler):
             q = queue.Queue()
             q.put({"type": "state", "state": snap()})
             q.put({"type": "music", **music})
+            q.put({"type": "view", "view": view})
+            q.put({"type": "lyrics", **lyrics_payload})
             try:
                 with open(dsa_history_path) as hf: q.put({"type": "dsa_history", "history": json.load(hf)})
             except (OSError, ValueError): pass
@@ -1087,7 +1126,6 @@ if __name__ == "__main__":
     threading.Thread(target=music_loop, daemon=True).start()
     threading.Thread(target=watch_loop, daemon=True).start()
     threading.Thread(target=typing_loop, daemon=True).start()
-    threading.Thread(target=audio_loop, daemon=True).start()
     threading.Thread(target=notify_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), H)
     srv.daemon_threads = True
@@ -1107,7 +1145,7 @@ if __name__ == "__main__":
         print("WARNING: no password set; anyone on this network can send events")
 
     def bye(*_):
-        react("yawn", "bye", 2)
+        react("yawn", phrase("bye"), 2)
         time.sleep(0.7)                                      # let the phone receive it
         os._exit(0)
     signal.signal(signal.SIGTERM, bye)

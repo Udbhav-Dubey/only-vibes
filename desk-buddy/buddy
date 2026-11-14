@@ -13,13 +13,17 @@ def post(event):
         raise SystemExit(1)
 
 if len(sys.argv) < 2:
-    raise SystemExit('usage: buddy mode MODE [TEXT] | flash MOOD | dsa [QUESTION] | solved [QUESTION] | build-pass | build-failed | terminal-error | pomo start [focus-min short-min long-min] | pomo skip|stop')
+    raise SystemExit('usage: buddy mode MODE [TEXT] | flash MOOD | dsa [QUESTION] | solved [QUESTION] | typing [seconds] | lyrics [on|off] | face | build-pass | build-failed | terminal-error | pomo start [focus-min short-min long-min] | pomo skip|stop')
 a=sys.argv[1]
 if a=='mode': post({'type':'mode','value':sys.argv[2] if len(sys.argv)>2 else 'idle','text':' '.join(sys.argv[3:])})
 elif a=='flash': post({'type':'flash','mood':sys.argv[2] if len(sys.argv)>2 else 'happy'})
+elif a=='lyrics': post({'type':'view','view':{'on':'lyrics','off':'face'}.get(sys.argv[2] if len(sys.argv)>2 else '', 'toggle')})
+elif a=='toggle': post({'type':'view','view':{'on':'lyrics','off':'face'}.get(sys.argv[2] if len(sys.argv)>2 else '', 'toggle')})
+elif a=='face': post({'type':'view','view':'face'})
 elif a=='lyric': post({'type':'lyric','line':' '.join(sys.argv[2:])})
 elif a=='dsa': post({'type':'dsa_start','text':' '.join(sys.argv[2:]) or "today's problem"})
 elif a=='solved': post({'type':'dsa_solved','text':' '.join(sys.argv[2:]) or 'Solved'})
+elif a=='typing': post({'type':'typing','force':float(sys.argv[2]) if len(sys.argv)>2 else 6})
 elif a=='build-pass': post({'type':'build_pass'})
 elif a=='build-failed': post({'type':'build_failed'})
 elif a=='terminal-error': post({'type':'terminal_error'})
